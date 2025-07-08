@@ -176,12 +176,12 @@ impl MerkleProof {
 
 /// Compute the Merkle root from POD items when bytemuck feature is enabled.
 #[cfg(feature = "bytemuck")]
-pub fn merkle_root_from_pod<T: Pod>(items: &[T]) -> Option<Hash> {
+pub fn merkle_root_from_pod_leaves<T: Pod>(items: &[T]) -> Option<Hash> {
     root_from_leaf_hashes(hash_leaves(items, bytemuck::bytes_of))
 }
 
 /// Compute the Merkle root from items implementing `AsRef<[u8]>`
-pub fn merkle_root_from_as_ref<T: AsRef<[u8]>>(items: &[T]) -> Option<Hash> {
+pub fn merkle_root_from_byte_ref_leaves<T: AsRef<[u8]>>(items: &[T]) -> Option<Hash> {
     root_from_leaf_hashes(hash_leaves(items, AsRef::as_ref))
 }
 
@@ -333,20 +333,20 @@ mod bytemuck_tests {
         #[derive(Clone, Copy, Default, Pod, Zeroable)]
         #[repr(C)]
         struct TestData {
-            id: u64,
+            id: Hash,
             value: u64,
         }
 
         let data = [
             TestData::default(),
-            TestData { id: 1, value: 100 },
-            TestData { id: 2, value: 200 },
-            TestData { id: 3, value: 300 },
-            TestData { id: 4, value: 400 },
+            TestData { id: Hash::new_unique(), value: 100 },
+            TestData { id: Hash::new_unique(), value: 200 },
+            TestData { id: Hash::new_unique(), value: 300 },
+            TestData { id: Hash::new_unique(), value: 400 },
         ];
 
         let proof = MerkleProof::from_pod_leaves(&data, 2).unwrap();
-        let root = merkle_root_from_pod(&data).unwrap();
+        let root = merkle_root_from_pod_leaves(&data).unwrap();
 
         assert_eq!(proof.root_from_pod_leaf(&data[2]), root);
         assert_ne!(proof.root_from_pod_leaf(&data[0]), root);
