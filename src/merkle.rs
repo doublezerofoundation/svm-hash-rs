@@ -39,10 +39,11 @@ fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 
 /// Convert a slice of items to their corresponding leaf hashes.
 fn hash_leaves<T>(items: &[T], to_bytes: impl Fn(&T) -> &[u8]) -> Vec<Hash> {
-    items
-        .iter()
-        .map(|item| double_hash(to_bytes(item), LEAF_PREFIX, LEAF_PREFIX))
-        .collect()
+    let mut hashes = Vec::with_capacity(items.len());
+    for item in items {
+        hashes.push(double_hash(to_bytes(item), LEAF_PREFIX, LEAF_PREFIX));
+    }
+    hashes
 }
 
 /// Compute the Merkle root from a vector of leaf hashes.
@@ -51,15 +52,21 @@ fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
         return None;
     }
 
-    while nodes.len() > 1 {
-        nodes = nodes
-            .chunks(2)
-            .map(|pair| {
-                let left = pair[0];
-                let right = *pair.get(1).unwrap_or(&left);
-                hash_pair(&left, &right)
-            })
-            .collect();
+    let mut len = nodes.len();
+    while len > 1 {
+        let mut write_idx = 0;
+        for read_idx in (0..len).step_by(2) {
+            let left = nodes[read_idx];
+            let right = if read_idx + 1 < len {
+                nodes[read_idx + 1]
+            } else {
+                // NOTE: Duplicate the last node if odd number
+                left
+            };
+            nodes[write_idx] = hash_pair(&left, &right);
+            write_idx += 1;
+        }
+        len = write_idx;
     }
 
     nodes.first().copied()
@@ -84,12 +91,15 @@ impl MerkleProof {
             return None;
         }
 
-        // TODO: Optimize this by precalculating the number of siblings.
-        let mut siblings = Vec::new();
+        // NOTE: Pre-calculate tree_depth for siblings
+        let tree_depth = (nodes.len() as f64).log2().ceil() as usize;
+        let mut siblings = Vec::with_capacity(tree_depth);
         let mut index = node_index;
 
         while nodes.len() > 1 {
-            let mut next = Vec::new();
+            // NOTE: Pre-allocate with exact capacity
+            let next_size = nodes.len().div_ceil(2);
+            let mut next = Vec::with_capacity(next_size);
 
             for i in (0..nodes.len()).step_by(2) {
                 let left = nodes[i];
@@ -339,10 +349,22 @@ mod bytemuck_tests {
 
         let data = [
             TestData::default(),
-            TestData { id: Hash::new_unique(), value: 100 },
-            TestData { id: Hash::new_unique(), value: 200 },
-            TestData { id: Hash::new_unique(), value: 300 },
-            TestData { id: Hash::new_unique(), value: 400 },
+            TestData {
+                id: Hash::new_unique(),
+                value: 100,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 200,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 300,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 400,
+            },
         ];
 
         let proof = MerkleProof::from_pod_leaves(&data, 2).unwrap();
