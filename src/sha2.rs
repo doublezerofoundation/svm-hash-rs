@@ -1,5 +1,5 @@
-use solana_hash::Hash;
-use solana_sha256_hasher::hashv;
+pub use solana_hash::Hash;
+pub use solana_sha256_hasher::{hash, hashv};
 
 /// Computes a domain-separated double SHA-256 hash of a message.
 ///
