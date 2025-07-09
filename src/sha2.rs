@@ -10,7 +10,7 @@ pub use solana_sha256_hasher::{hash, hashv};
 /// # Example
 /// ```
 /// use svm_hash::sha2::double_hash;
-/// let hash = double_hash(b"message", b"leaf_prefix", b"node_prefix");
+/// let hash = double_hash(b"message", b"foo", b"bar");
 /// ```
 pub fn double_hash(message: &[u8], first_prefix: &[u8], second_prefix: &[u8]) -> Hash {
     let first = hashv(&[first_prefix, message]);
