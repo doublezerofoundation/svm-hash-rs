@@ -6,6 +6,11 @@ pub use solana_sha256_hasher::{hash, hashv};
 /// This function performs two rounds of SHA-256 hashing with domain separation
 /// prefixes, which is a common pattern in blockchain applications to prevent
 /// hash collision attacks across different contexts.
+///
+/// # Example
+/// ```
+/// use svm_hash::sha2::double_hash;
+/// let hash = double_hash(b"message", b"leaf_prefix", b"node_prefix");
 /// ```
 pub fn double_hash(message: &[u8], first_prefix: &[u8], second_prefix: &[u8]) -> Hash {
     let first = hashv(&[first_prefix, message]);

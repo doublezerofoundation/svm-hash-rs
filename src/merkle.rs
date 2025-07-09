@@ -39,10 +39,11 @@ fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 
 /// Convert a slice of items to their corresponding leaf hashes.
 fn hash_leaves<T>(items: &[T], to_bytes: impl Fn(&T) -> &[u8]) -> Vec<Hash> {
-    items
-        .iter()
-        .map(|item| double_hash(to_bytes(item), LEAF_PREFIX, LEAF_PREFIX))
-        .collect()
+    let mut hashes = Vec::with_capacity(items.len());
+    for item in items {
+        hashes.push(double_hash(to_bytes(item), LEAF_PREFIX, LEAF_PREFIX));
+    }
+    hashes
 }
 
 /// Compute the Merkle root from a vector of leaf hashes.
@@ -51,15 +52,21 @@ fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
         return None;
     }
 
-    while nodes.len() > 1 {
-        nodes = nodes
-            .chunks(2)
-            .map(|pair| {
-                let left = pair[0];
-                let right = *pair.get(1).unwrap_or(&left);
-                hash_pair(&left, &right)
-            })
-            .collect();
+    let mut len = nodes.len();
+    while len > 1 {
+        let mut write_idx = 0;
+        for read_idx in (0..len).step_by(2) {
+            let left = nodes[read_idx];
+            let right = if read_idx + 1 < len {
+                nodes[read_idx + 1]
+            } else {
+                // NOTE: Duplicate the last node if odd number
+                left
+            };
+            nodes[write_idx] = hash_pair(&left, &right);
+            write_idx += 1;
+        }
+        len = write_idx;
     }
 
     nodes.first().copied()
@@ -84,12 +91,15 @@ impl MerkleProof {
             return None;
         }
 
-        // TODO: Optimize this by precalculating the number of siblings.
-        let mut siblings = Vec::new();
+        // NOTE: Pre-calculate tree_depth for siblings
+        let tree_depth = (nodes.len() as f64).log2().ceil() as usize;
+        let mut siblings = Vec::with_capacity(tree_depth);
         let mut index = node_index;
 
         while nodes.len() > 1 {
-            let mut next = Vec::new();
+            // NOTE: Pre-allocate with exact capacity
+            let next_size = nodes.len().div_ceil(2);
+            let mut next = Vec::with_capacity(next_size);
 
             for i in (0..nodes.len()).step_by(2) {
                 let left = nodes[i];
@@ -111,9 +121,11 @@ impl MerkleProof {
                 }
             }
 
+            debug_assert_eq!(next.len(), next_size, "next layer size mismatch");
             nodes = next;
         }
 
+        debug_assert_eq!(siblings.len(), tree_depth, "tree depth size mismatch");
         Some(Self(siblings))
     }
 
@@ -319,6 +331,122 @@ mod tests {
             assert_eq!(proof.root_from_leaf(leaves[i]), root);
         }
     }
+
+    #[test]
+    fn test_odd_number_of_leaves() {
+        let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
+        let root = merkle_root_from_leaves(&leaves).unwrap();
+
+        // Test proof for a leaf in the middle
+        let leaf_index = 2; // "C"
+        let leaf = leaves[leaf_index];
+
+        let proof = MerkleProof::from_leaves(&leaves, leaf_index).unwrap();
+        assert_eq!(proof.root_from_leaf(leaf), root);
+
+        // Verify proof length. For 5 leaves, ceil(log2(5)) = 3.
+        assert_eq!(proof.len(), 3);
+
+        // Test proof for the last leaf
+        let last_leaf_index = 4; // "E"
+        let last_leaf = leaves[last_leaf_index];
+        let proof_last = MerkleProof::from_leaves(&leaves, last_leaf_index).unwrap();
+        assert_eq!(proof_last.root_from_leaf(last_leaf), root);
+    }
+
+    #[test]
+    fn test_even_tree_proof_content() {
+        // This test verifies the exact content of a proof for a balanced, power-of-two tree.
+        // For 4 leaves (A, B, C, D), the tree structure is perfectly balanced.
+        //
+        //          root
+        //         /    \
+        //        /      \
+        //     hash_ab    hash_cd
+        //      / \        /   \
+        //     /   \      /     \
+        //   h(A) h(B)   h(C)   h(D)
+        //
+        // The proof path for h(C) is as follows:
+        // 1. To get to `hash_cd`, we need `h(D)`, which is the Right sibling.
+        // 2. To get to `root`, we need `hash_ab`, which is the Left sibling.
+        // The final proof should be `[ (h(D), Right), (hash_ab, Left) ]`.
+
+        let leaves: [&[u8]; 4] = [b"A", b"B", b"C", b"D"];
+
+        // Manually compute the expected hashes
+        let hash_a = double_hash(b"A", LEAF_PREFIX, LEAF_PREFIX);
+        let hash_b = double_hash(b"B", LEAF_PREFIX, LEAF_PREFIX);
+        let hash_d = double_hash(b"D", LEAF_PREFIX, LEAF_PREFIX);
+
+        // Compute the intermediate node hash
+        let hash_ab = hash_pair(&hash_a, &hash_b);
+
+        // Generate proof for leaf "C" (index 2)
+        let proof = MerkleProof::from_leaves(&leaves, 2).unwrap();
+
+        // Verification
+        let root = merkle_root_from_leaves(&leaves).unwrap();
+        assert_eq!(proof.root_from_leaf(b"C"), root);
+
+        // Assert the exact proof structure as derived from the diagram
+        assert_eq!(proof.len(), 2);
+
+        // 1. First sibling is h(D) on the right
+        assert_eq!(proof.0[0].hash, hash_d);
+        assert_eq!(proof.0[0].side, LeafSide::Right);
+
+        // 2. Second sibling is hash_ab on the left
+        assert_eq!(proof.0[1].hash, hash_ab);
+        assert_eq!(proof.0[1].side, LeafSide::Left);
+    }
+
+    #[test]
+    fn test_odd_tree_proof_content() {
+        // This test verifies the exact content of a proof for a non-power-of-two tree.
+        // For 3 leaves (A, B, C), the tree structure is unbalanced. The lone leaf C
+        // at the first level is duplicated to create its partner node.
+        //
+        //          root
+        //         /    \
+        //        /      \
+        //     hash_ab    hash_cc
+        //      / \        /   \
+        //     /   \      /     \
+        //   h(A) h(B)   h(C)   h(C)
+        //
+        // The proof path for h(B) is as follows:
+        // 1. To get to `hash_ab`, we need `h(A)`, which is the Left sibling.
+        // 2. To get to `root`, we need `hash_cc`, which is the Right sibling.
+        // The final proof should be `[ (h(A), Left), (hash_cc, Right) ]`.
+
+        let leaves: [&[u8]; 3] = [b"A", b"B", b"C"];
+
+        // Manually compute the expected hashes
+        let hash_a = double_hash(b"A", LEAF_PREFIX, LEAF_PREFIX);
+        let hash_c = double_hash(b"C", LEAF_PREFIX, LEAF_PREFIX);
+
+        // At the second level, C is paired with itself to create the hash_cc node
+        let hash_cc = hash_pair(&hash_c, &hash_c);
+
+        // Generate proof for leaf "B" (index 1)
+        let proof = MerkleProof::from_leaves(&leaves, 1).unwrap();
+
+        // Verification
+        let root = merkle_root_from_leaves(&leaves).unwrap();
+        assert_eq!(proof.root_from_leaf(b"B"), root);
+
+        // Assert the exact proof structure as derived from the diagram
+        assert_eq!(proof.len(), 2);
+
+        // 1. First sibling is h(A) on the left
+        assert_eq!(proof.0[0].hash, hash_a);
+        assert_eq!(proof.0[0].side, LeafSide::Left);
+
+        // 2. Second sibling is hash_cc on the right
+        assert_eq!(proof.0[1].hash, hash_cc);
+        assert_eq!(proof.0[1].side, LeafSide::Right);
+    }
 }
 
 #[cfg(feature = "bytemuck")]
@@ -339,10 +467,22 @@ mod bytemuck_tests {
 
         let data = [
             TestData::default(),
-            TestData { id: Hash::new_unique(), value: 100 },
-            TestData { id: Hash::new_unique(), value: 200 },
-            TestData { id: Hash::new_unique(), value: 300 },
-            TestData { id: Hash::new_unique(), value: 400 },
+            TestData {
+                id: Hash::new_unique(),
+                value: 100,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 200,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 300,
+            },
+            TestData {
+                id: Hash::new_unique(),
+                value: 400,
+            },
         ];
 
         let proof = MerkleProof::from_pod_leaves(&data, 2).unwrap();
