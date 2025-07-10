@@ -447,6 +447,75 @@ mod tests {
         assert_eq!(proof.0[1].hash, hash_cc);
         assert_eq!(proof.0[1].side, LeafSide::Right);
     }
+
+    #[test]
+    fn test_generic_asref() {
+        // Test various types that implement AsRef<[u8]>
+        let string_leaves = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "cherry".to_string(),
+        ];
+        let vec_leaves: Vec<Vec<u8>> =
+            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()];
+        let str_leaves = vec!["apple", "banana", "cherry"];
+
+        // Test from_byte_ref_leaves with different types
+        let proof_string = MerkleProof::from_byte_ref_leaves(&string_leaves, 1).unwrap();
+        let proof_vec = MerkleProof::from_byte_ref_leaves(&vec_leaves, 1).unwrap();
+        let proof_str = MerkleProof::from_byte_ref_leaves(&str_leaves, 1).unwrap();
+
+        // All proofs should be identical since the underlying bytes are the same
+        assert_eq!(proof_string.len(), proof_vec.len());
+        assert_eq!(proof_string.len(), proof_str.len());
+
+        // Test root_from_byte_ref_leaf with different types
+        let root_string = proof_string.root_from_byte_ref_leaf(&string_leaves[1]);
+        let root_vec = proof_vec.root_from_byte_ref_leaf(&vec_leaves[1]);
+        let root_str = proof_str.root_from_byte_ref_leaf(&str_leaves[1]);
+
+        assert_eq!(root_string, root_vec);
+        assert_eq!(root_string, root_str);
+
+        // Test merkle_root_from_byte_ref_leaves
+        let merkle_root_string = merkle_root_from_byte_ref_leaves(&string_leaves).unwrap();
+        let merkle_root_vec = merkle_root_from_byte_ref_leaves(&vec_leaves).unwrap();
+        let merkle_root_str = merkle_root_from_byte_ref_leaves(&str_leaves).unwrap();
+
+        assert_eq!(merkle_root_string, merkle_root_vec);
+        assert_eq!(merkle_root_string, merkle_root_str);
+
+        // Verify the roots match
+        assert_eq!(root_string, merkle_root_string);
+    }
+
+    #[test]
+    fn test_merkle_proof_iterators() {
+        let leaves: [&[u8]; 4] = [b"one", b"two", b"three", b"four"];
+        let proof = MerkleProof::from_leaves(&leaves, 2).unwrap();
+
+        // Test borrowed iterator (&MerkleProof)
+        let borrowed_siblings: Vec<_> = (&proof).into_iter().collect();
+        assert_eq!(borrowed_siblings.len(), 2); // 4 leaves = 2 levels
+
+        // Verify we can iterate multiple times with borrowed iterator
+        let borrowed_count = (&proof).into_iter().count();
+        assert_eq!(borrowed_count, 2);
+
+        // Test that the proof still exists after borrowed iteration
+        assert_eq!(proof.len(), 2);
+
+        // Test owned iterator (MerkleProof) - this consumes the proof
+        let proof_for_owned = MerkleProof::from_leaves(&leaves, 2).unwrap();
+        let owned_siblings: Vec<MerkleSibling> = proof_for_owned.into_iter().collect();
+        assert_eq!(owned_siblings.len(), 2);
+
+        // Verify the siblings are the same between borrowed and owned
+        for (borrowed, owned) in borrowed_siblings.iter().zip(owned_siblings.iter()) {
+            assert_eq!(borrowed.hash, owned.hash);
+            assert_eq!(borrowed.side, owned.side);
+        }
+    }
 }
 
 #[cfg(feature = "bytemuck")]
