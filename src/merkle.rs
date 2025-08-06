@@ -340,6 +340,7 @@ mod tests {
         assert_eq!(proof.len(), 0);
 
         assert_ne!(proof.root_from_leaf(b"wrong", Some(LEAF_PREFIX)), root);
+        assert_ne!(proof.root_from_leaf(b"single", None), root);
     }
 
     #[test]
