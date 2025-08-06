@@ -6,13 +6,15 @@ use crate::sha2::double_hash;
 #[cfg(feature = "bytemuck")]
 use bytemuck::Pod;
 
-/// Prefix used when hashing leaf nodes.
-pub const LEAF_PREFIX: &[u8] = &[0x00];
+/// Default prefix used when hashing leaf nodes. When double-hashing leaves,
+/// this prefix is used for the second hash.
+pub const DEFAULT_LEAF_PREFIX: &[u8] = &[0x00];
 
 /// Prefix used when hashing internal nodes.
 pub const NODE_PREFIX: &[u8] = &[0x01];
 
-/// A sibling node in a Merkle proof, containing the hash and position information.
+/// A sibling node in a Merkle proof, containing the hash and position
+/// information.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleSibling {
     /// The hash of the sibling node.
@@ -38,10 +40,18 @@ fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 }
 
 /// Convert a slice of items to their corresponding leaf hashes.
-fn hash_leaves<T>(items: &[T], to_bytes: impl Fn(&T) -> &[u8]) -> Vec<Hash> {
+fn hash_leaves<T>(
+    items: &[T],
+    to_bytes: impl Fn(&T) -> &[u8],
+    leaf_prefix: Option<&[u8]>,
+) -> Vec<Hash> {
     let mut hashes = Vec::with_capacity(items.len());
     for item in items {
-        hashes.push(double_hash(to_bytes(item), LEAF_PREFIX, LEAF_PREFIX));
+        hashes.push(double_hash(
+            to_bytes(item),
+            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+            DEFAULT_LEAF_PREFIX,
+        ));
     }
     hashes
 }
@@ -73,14 +83,27 @@ fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
 }
 
 impl MerkleProof {
-    /// Create a `MerkleProof` from a slice of raw byte slices representing Merkle leaves.
+    /// Create a `MerkleProof` from a slice of raw byte slices representing
+    /// Merkle leaves.
     ///
-    /// Each item will be double-hashed with a leaf prefix and used to build the tree.
-    /// The proof will allow verification that the leaf at `node_index` is included in the tree.
-    pub fn from_leaves(items: &[&[u8]], node_index: usize) -> Option<Self> {
+    /// Each item will be double-hashed with a leaf prefix and used to build the
+    /// tree. The proof will allow verification that the leaf at `node_index` is
+    /// included in the tree. The `leaf_prefix` is optional and defaults to
+    /// `DEFAULT_LEAF_PREFIX`.
+    pub fn from_leaves(
+        items: &[&[u8]],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
         let hashes: Vec<Hash> = items
             .iter()
-            .map(|bytes| double_hash(bytes, LEAF_PREFIX, LEAF_PREFIX))
+            .map(|bytes| {
+                double_hash(
+                    bytes,
+                    leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+                    DEFAULT_LEAF_PREFIX,
+                )
+            })
             .collect();
         Self::from_hashed_leaves(hashes, node_index)
     }
@@ -156,59 +179,106 @@ impl MerkleProof {
         self.0.is_empty()
     }
 
-    pub fn root_from_leaf(&self, leaf: &[u8]) -> Hash {
-        let leaf = double_hash(leaf, LEAF_PREFIX, LEAF_PREFIX);
+    pub fn root_from_leaf(&self, leaf: &[u8], leaf_prefix: Option<&[u8]>) -> Hash {
+        let leaf = double_hash(
+            leaf,
+            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+            DEFAULT_LEAF_PREFIX,
+        );
         self.root_from_hashed_leaf(leaf)
     }
 
-    /// Create a proof from items implementing `AsRef<[u8]>`.
-    pub fn from_byte_ref_leaves<T: AsRef<[u8]>>(items: &[T], node_index: usize) -> Option<Self> {
-        Self::from_hashed_leaves(hash_leaves(items, AsRef::as_ref), node_index)
+    /// Create a proof from items implementing `AsRef<[u8]>`. The `leaf_prefix`
+    /// is optional and defaults to `DEFAULT_LEAF_PREFIX`.
+    pub fn from_byte_ref_leaves<T: AsRef<[u8]>>(
+        items: &[T],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
+        Self::from_hashed_leaves(hash_leaves(items, AsRef::as_ref, leaf_prefix), node_index)
     }
 
-    /// Compute the root from a leaf implementing `AsRef<[u8]>`.
-    pub fn root_from_byte_ref_leaf<T: AsRef<[u8]>>(&self, item: &T) -> Hash {
-        let leaf = double_hash(item.as_ref(), LEAF_PREFIX, LEAF_PREFIX);
+    /// Compute the root from a leaf implementing `AsRef<[u8]>`. The
+    /// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
+    pub fn root_from_byte_ref_leaf<T: AsRef<[u8]>>(
+        &self,
+        item: &T,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Hash {
+        let leaf = double_hash(
+            item.as_ref(),
+            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+            DEFAULT_LEAF_PREFIX,
+        );
         self.root_from_hashed_leaf(leaf)
     }
 
-    /// Create a proof from POD (Plain Old Data) items when bytemuck feature is enabled.
+    /// Create a proof from POD (Plain Old Data) items when bytemuck feature is
+    /// enabled. The `leaf_prefix` is optional and defaults to
+    /// `DEFAULT_LEAF_PREFIX`.
     #[cfg(feature = "bytemuck")]
-    pub fn from_pod_leaves<T: Pod>(items: &[T], node_index: usize) -> Option<Self> {
-        Self::from_hashed_leaves(hash_leaves(items, bytemuck::bytes_of), node_index)
+    pub fn from_pod_leaves<T: Pod>(
+        items: &[T],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
+        Self::from_hashed_leaves(
+            hash_leaves(items, bytemuck::bytes_of, leaf_prefix),
+            node_index,
+        )
     }
 
-    /// Compute the root from a POD leaf when bytemuck feature is enabled.
+    /// Compute the root from a POD leaf when bytemuck feature is enabled. The
+    /// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
     #[cfg(feature = "bytemuck")]
-    pub fn root_from_pod_leaf<T: Pod>(&self, item: &T) -> Hash {
-        let leaf = double_hash(bytemuck::bytes_of(item), LEAF_PREFIX, LEAF_PREFIX);
+    pub fn root_from_pod_leaf<T: Pod>(&self, item: &T, leaf_prefix: Option<&[u8]>) -> Hash {
+        let leaf = double_hash(
+            bytemuck::bytes_of(item),
+            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+            DEFAULT_LEAF_PREFIX,
+        );
         self.root_from_hashed_leaf(leaf)
     }
 }
 
-/// Compute the Merkle root from POD items when bytemuck feature is enabled.
+/// Compute the Merkle root from POD items when bytemuck feature is enabled. The
+/// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
 #[cfg(feature = "bytemuck")]
-pub fn merkle_root_from_pod_leaves<T: Pod>(items: &[T]) -> Option<Hash> {
-    root_from_leaf_hashes(hash_leaves(items, bytemuck::bytes_of))
+pub fn merkle_root_from_pod_leaves<T: Pod>(
+    items: &[T],
+    leaf_prefix: Option<&[u8]>,
+) -> Option<Hash> {
+    root_from_leaf_hashes(hash_leaves(items, bytemuck::bytes_of, leaf_prefix))
 }
 
-/// Compute the Merkle root from items implementing `AsRef<[u8]>`
-pub fn merkle_root_from_byte_ref_leaves<T: AsRef<[u8]>>(items: &[T]) -> Option<Hash> {
-    root_from_leaf_hashes(hash_leaves(items, AsRef::as_ref))
+/// Compute the Merkle root from items implementing `AsRef<[u8]>`. The
+/// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
+pub fn merkle_root_from_byte_ref_leaves<T: AsRef<[u8]>>(
+    items: &[T],
+    leaf_prefix: Option<&[u8]>,
+) -> Option<Hash> {
+    root_from_leaf_hashes(hash_leaves(items, AsRef::as_ref, leaf_prefix))
 }
 
-/// Compute the Merkle root from a slice of raw byte slices.
+/// Compute the Merkle root from a slice of raw byte slices. The `leaf_prefix`
+/// is optional and defaults to `DEFAULT_LEAF_PREFIX`.
 ///
-/// Each item is treated as a leaf and double-hashed with a leaf prefix.
-pub fn merkle_root_from_leaves(items: &[&[u8]]) -> Option<Hash> {
+/// Each item is treated as a leaf and double-hashed with a leaf prefix (either
+/// `leaf_prefix` or `DEFAULT_LEAF_PREFIX`).
+pub fn merkle_root_from_leaves(items: &[&[u8]], leaf_prefix: Option<&[u8]>) -> Option<Hash> {
     let hashes: Vec<Hash> = items
         .iter()
-        .map(|bytes| double_hash(bytes, LEAF_PREFIX, LEAF_PREFIX))
+        .map(|bytes| {
+            double_hash(
+                bytes,
+                leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
+                DEFAULT_LEAF_PREFIX,
+            )
+        })
         .collect();
     root_from_leaf_hashes(hashes)
 }
 
-// Iterator implementations
 impl<'a> IntoIterator for &'a MerkleProof {
     type Item = &'a MerkleSibling;
     type IntoIter = core::slice::Iter<'a, MerkleSibling>;
@@ -242,107 +312,118 @@ mod tests {
         let leaf: &[u8] = b"B";
         assert_eq!(leaf, leaves[leaf_index]);
 
-        let proof = MerkleProof::from_leaves(&leaves, leaf_index).unwrap();
-        let root = merkle_root_from_leaves(&leaves).unwrap();
+        let proof = MerkleProof::from_leaves(&leaves, leaf_index, None).unwrap();
+        let root = merkle_root_from_leaves(&leaves, None).unwrap();
 
-        assert_eq!(proof.root_from_leaf(leaf), root);
-        assert_ne!(proof.root_from_leaf(b"nope"), root);
+        assert_eq!(proof.root_from_leaf(leaf, None), root);
+        assert_ne!(proof.root_from_leaf(b"nope", None), root);
 
         let mut wrong_leaves = leaves.to_vec();
         wrong_leaves.retain(|l| l != &leaf);
 
         for wrong_leaf in wrong_leaves.into_iter() {
             assert_ne!(wrong_leaf, leaf);
-            assert_ne!(proof.root_from_leaf(wrong_leaf), root);
+            assert_ne!(proof.root_from_leaf(wrong_leaf, None), root);
         }
     }
 
     #[test]
     fn test_single_leaf_tree() {
-        let leaves: [&[u8]; 1] = [b"single"];
-        let proof = MerkleProof::from_leaves(&leaves, 0).unwrap();
-        let root = merkle_root_from_leaves(&leaves).unwrap();
+        const LEAF_PREFIX: &[u8] = b"test_single_leaf_tree";
 
-        assert_eq!(proof.root_from_leaf(b"single"), root);
+        let leaves: [&[u8]; 1] = [b"single"];
+        let proof = MerkleProof::from_leaves(&leaves, 0, Some(LEAF_PREFIX)).unwrap();
+        let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        assert_eq!(proof.root_from_leaf(b"single", Some(LEAF_PREFIX)), root);
         assert!(proof.is_empty());
         assert_eq!(proof.len(), 0);
 
-        assert_ne!(proof.root_from_leaf(b"wrong"), root);
+        assert_ne!(proof.root_from_leaf(b"wrong", Some(LEAF_PREFIX)), root);
     }
 
     #[test]
     fn test_two_leaf_tree() {
+        const LEAF_PREFIX: &[u8] = b"test_two_leaf_tree";
+
         let leaves: [&[u8]; 2] = [b"left", b"right"];
 
         // Test proof for left leaf
-        let proof_left = MerkleProof::from_leaves(&leaves, 0).unwrap();
-        let root = merkle_root_from_leaves(&leaves).unwrap();
+        let proof_left = MerkleProof::from_leaves(&leaves, 0, Some(LEAF_PREFIX)).unwrap();
+        let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
 
-        assert_eq!(proof_left.root_from_leaf(b"left"), root);
+        assert_eq!(proof_left.root_from_leaf(b"left", Some(LEAF_PREFIX)), root);
         assert_eq!(proof_left.len(), 1);
         assert!(!proof_left.is_empty());
 
         // Test proof for right leaf
-        let proof_right = MerkleProof::from_leaves(&leaves, 1).unwrap();
-        assert_eq!(proof_right.root_from_leaf(b"right"), root);
+        let proof_right = MerkleProof::from_leaves(&leaves, 1, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(
+            proof_right.root_from_leaf(b"right", Some(LEAF_PREFIX)),
+            root
+        );
         assert_eq!(proof_right.len(), 1);
         assert!(!proof_right.is_empty());
 
         // Cross-verify proofs don't work with wrong leaves
-        assert_ne!(proof_left.root_from_leaf(b"right"), root);
-        assert_ne!(proof_right.root_from_leaf(b"left"), root);
+        assert_ne!(proof_left.root_from_leaf(b"right", Some(LEAF_PREFIX)), root);
+        assert_ne!(proof_right.root_from_leaf(b"left", Some(LEAF_PREFIX)), root);
     }
 
     #[test]
     fn test_deterministic_roots() {
+        const LEAF_PREFIX: &[u8] = b"test_deterministic_roots";
+
         let leaves: [&[u8]; 4] = [b"apple", b"banana", b"cherry", b"date"];
 
-        let root1 = merkle_root_from_leaves(&leaves).unwrap();
-        let root2 = merkle_root_from_leaves(&leaves).unwrap();
+        let root1 = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+        let root2 = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
         assert_eq!(root1, root2);
 
         let reordered: [&[u8]; 4] = [b"banana", b"apple", b"cherry", b"date"];
-        let root3 = merkle_root_from_leaves(&reordered).unwrap();
+        let root3 = merkle_root_from_leaves(&reordered, Some(LEAF_PREFIX)).unwrap();
         assert_ne!(root1, root3);
     }
 
     #[test]
     fn test_empty_tree() {
-        assert!(merkle_root_from_leaves(&[]).is_none());
-        assert!(MerkleProof::from_leaves(&[], 0).is_none());
+        assert!(merkle_root_from_leaves(&[], None).is_none());
+        assert!(MerkleProof::from_leaves(&[], 0, None).is_none());
     }
 
     #[test]
     fn test_invalid_indices() {
         let leaves: [&[u8]; 3] = [b"one", b"two", b"three"];
-        assert!(MerkleProof::from_leaves(&leaves, 3).is_none());
+        assert!(MerkleProof::from_leaves(&leaves, 3, None).is_none());
     }
 
     #[test]
     fn test_proof_structure_correctness() {
         // Test with 4 leaves to verify proof structure
         let leaves: [&[u8]; 4] = [b"leaf0", b"leaf1", b"leaf2", b"leaf3"];
-        let root = merkle_root_from_leaves(&leaves).unwrap();
+        let root = merkle_root_from_leaves(&leaves, None).unwrap();
 
         // For a 4-leaf tree, each proof should have exactly 2 siblings
         for i in 0..4 {
-            let proof = MerkleProof::from_leaves(&leaves, i).unwrap();
+            let proof = MerkleProof::from_leaves(&leaves, i, None).unwrap();
             assert_eq!(proof.len(), 2);
-            assert_eq!(proof.root_from_leaf(leaves[i]), root);
+            assert_eq!(proof.root_from_leaf(leaves[i], None), root);
         }
     }
 
     #[test]
     fn test_odd_number_of_leaves() {
+        const LEAF_PREFIX: &[u8] = b"test_odd_number_of_leaves";
+
         let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
-        let root = merkle_root_from_leaves(&leaves).unwrap();
+        let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
 
         // Test proof for a leaf in the middle
         let leaf_index = 2; // "C"
         let leaf = leaves[leaf_index];
 
-        let proof = MerkleProof::from_leaves(&leaves, leaf_index).unwrap();
-        assert_eq!(proof.root_from_leaf(leaf), root);
+        let proof = MerkleProof::from_leaves(&leaves, leaf_index, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(proof.root_from_leaf(leaf, Some(LEAF_PREFIX)), root);
 
         // Verify proof length. For 5 leaves, ceil(log2(5)) = 3.
         assert_eq!(proof.len(), 3);
@@ -350,12 +431,18 @@ mod tests {
         // Test proof for the last leaf
         let last_leaf_index = 4; // "E"
         let last_leaf = leaves[last_leaf_index];
-        let proof_last = MerkleProof::from_leaves(&leaves, last_leaf_index).unwrap();
-        assert_eq!(proof_last.root_from_leaf(last_leaf), root);
+        let proof_last =
+            MerkleProof::from_leaves(&leaves, last_leaf_index, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(
+            proof_last.root_from_leaf(last_leaf, Some(LEAF_PREFIX)),
+            root
+        );
     }
 
     #[test]
     fn test_even_tree_proof_content() {
+        const LEAF_PREFIX: &[u8] = b"test_even_tree_proof_content";
+
         // This test verifies the exact content of a proof for a balanced, power-of-two tree.
         // For 4 leaves (A, B, C, D), the tree structure is perfectly balanced.
         //
@@ -375,19 +462,19 @@ mod tests {
         let leaves: [&[u8]; 4] = [b"A", b"B", b"C", b"D"];
 
         // Manually compute the expected hashes
-        let hash_a = double_hash(b"A", LEAF_PREFIX, LEAF_PREFIX);
-        let hash_b = double_hash(b"B", LEAF_PREFIX, LEAF_PREFIX);
-        let hash_d = double_hash(b"D", LEAF_PREFIX, LEAF_PREFIX);
+        let hash_a = double_hash(b"A", LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_b = double_hash(b"B", LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_d = double_hash(b"D", LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
 
         // Compute the intermediate node hash
         let hash_ab = hash_pair(&hash_a, &hash_b);
 
         // Generate proof for leaf "C" (index 2)
-        let proof = MerkleProof::from_leaves(&leaves, 2).unwrap();
+        let proof = MerkleProof::from_leaves(&leaves, 2, Some(LEAF_PREFIX)).unwrap();
 
         // Verification
-        let root = merkle_root_from_leaves(&leaves).unwrap();
-        assert_eq!(proof.root_from_leaf(b"C"), root);
+        let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(proof.root_from_leaf(b"C", Some(LEAF_PREFIX)), root);
 
         // Assert the exact proof structure as derived from the diagram
         assert_eq!(proof.len(), 2);
@@ -423,18 +510,18 @@ mod tests {
         let leaves: [&[u8]; 3] = [b"A", b"B", b"C"];
 
         // Manually compute the expected hashes
-        let hash_a = double_hash(b"A", LEAF_PREFIX, LEAF_PREFIX);
-        let hash_c = double_hash(b"C", LEAF_PREFIX, LEAF_PREFIX);
+        let hash_a = double_hash(b"A", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_c = double_hash(b"C", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
 
         // At the second level, C is paired with itself to create the hash_cc node
         let hash_cc = hash_pair(&hash_c, &hash_c);
 
         // Generate proof for leaf "B" (index 1)
-        let proof = MerkleProof::from_leaves(&leaves, 1).unwrap();
+        let proof = MerkleProof::from_leaves(&leaves, 1, None).unwrap();
 
         // Verification
-        let root = merkle_root_from_leaves(&leaves).unwrap();
-        assert_eq!(proof.root_from_leaf(b"B"), root);
+        let root = merkle_root_from_leaves(&leaves, None).unwrap();
+        assert_eq!(proof.root_from_leaf(b"B", None), root);
 
         // Assert the exact proof structure as derived from the diagram
         assert_eq!(proof.len(), 2);
@@ -450,6 +537,8 @@ mod tests {
 
     #[test]
     fn test_generic_asref() {
+        const LEAF_PREFIX: &[u8] = b"test_generic_asref";
+
         // Test various types that implement AsRef<[u8]>
         let string_leaves = vec![
             "apple".to_string(),
@@ -461,26 +550,33 @@ mod tests {
         let str_leaves = vec!["apple", "banana", "cherry"];
 
         // Test from_byte_ref_leaves with different types
-        let proof_string = MerkleProof::from_byte_ref_leaves(&string_leaves, 1).unwrap();
-        let proof_vec = MerkleProof::from_byte_ref_leaves(&vec_leaves, 1).unwrap();
-        let proof_str = MerkleProof::from_byte_ref_leaves(&str_leaves, 1).unwrap();
+        let proof_string =
+            MerkleProof::from_byte_ref_leaves(&string_leaves, 1, Some(LEAF_PREFIX)).unwrap();
+        let proof_vec =
+            MerkleProof::from_byte_ref_leaves(&vec_leaves, 1, Some(LEAF_PREFIX)).unwrap();
+        let proof_str =
+            MerkleProof::from_byte_ref_leaves(&str_leaves, 1, Some(LEAF_PREFIX)).unwrap();
 
         // All proofs should be identical since the underlying bytes are the same
         assert_eq!(proof_string.len(), proof_vec.len());
         assert_eq!(proof_string.len(), proof_str.len());
 
         // Test root_from_byte_ref_leaf with different types
-        let root_string = proof_string.root_from_byte_ref_leaf(&string_leaves[1]);
-        let root_vec = proof_vec.root_from_byte_ref_leaf(&vec_leaves[1]);
-        let root_str = proof_str.root_from_byte_ref_leaf(&str_leaves[1]);
+        let root_string =
+            proof_string.root_from_byte_ref_leaf(&string_leaves[1], Some(LEAF_PREFIX));
+        let root_vec = proof_vec.root_from_byte_ref_leaf(&vec_leaves[1], Some(LEAF_PREFIX));
+        let root_str = proof_str.root_from_byte_ref_leaf(&str_leaves[1], Some(LEAF_PREFIX));
 
         assert_eq!(root_string, root_vec);
         assert_eq!(root_string, root_str);
 
         // Test merkle_root_from_byte_ref_leaves
-        let merkle_root_string = merkle_root_from_byte_ref_leaves(&string_leaves).unwrap();
-        let merkle_root_vec = merkle_root_from_byte_ref_leaves(&vec_leaves).unwrap();
-        let merkle_root_str = merkle_root_from_byte_ref_leaves(&str_leaves).unwrap();
+        let merkle_root_string =
+            merkle_root_from_byte_ref_leaves(&string_leaves, Some(LEAF_PREFIX)).unwrap();
+        let merkle_root_vec =
+            merkle_root_from_byte_ref_leaves(&vec_leaves, Some(LEAF_PREFIX)).unwrap();
+        let merkle_root_str =
+            merkle_root_from_byte_ref_leaves(&str_leaves, Some(LEAF_PREFIX)).unwrap();
 
         assert_eq!(merkle_root_string, merkle_root_vec);
         assert_eq!(merkle_root_string, merkle_root_str);
@@ -492,7 +588,7 @@ mod tests {
     #[test]
     fn test_merkle_proof_iterators() {
         let leaves: [&[u8]; 4] = [b"one", b"two", b"three", b"four"];
-        let proof = MerkleProof::from_leaves(&leaves, 2).unwrap();
+        let proof = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
 
         // Test borrowed iterator (&MerkleProof)
         let borrowed_siblings: Vec<_> = (&proof).into_iter().collect();
@@ -506,7 +602,7 @@ mod tests {
         assert_eq!(proof.len(), 2);
 
         // Test owned iterator (MerkleProof) - this consumes the proof
-        let proof_for_owned = MerkleProof::from_leaves(&leaves, 2).unwrap();
+        let proof_for_owned = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
         let owned_siblings: Vec<MerkleSibling> = proof_for_owned.into_iter().collect();
         assert_eq!(owned_siblings.len(), 2);
 
@@ -525,6 +621,8 @@ mod bytemuck_tests {
 
     #[test]
     fn test_pod_leaves() {
+        const LEAF_PREFIX: &[u8] = b"test_pod_leaves";
+
         use bytemuck::{Pod, Zeroable};
 
         #[derive(Clone, Copy, Default, Pod, Zeroable)]
@@ -554,10 +652,10 @@ mod bytemuck_tests {
             },
         ];
 
-        let proof = MerkleProof::from_pod_leaves(&data, 2).unwrap();
-        let root = merkle_root_from_pod_leaves(&data).unwrap();
+        let proof = MerkleProof::from_pod_leaves(&data, 2, Some(LEAF_PREFIX)).unwrap();
+        let root = merkle_root_from_pod_leaves(&data, Some(LEAF_PREFIX)).unwrap();
 
-        assert_eq!(proof.root_from_pod_leaf(&data[2]), root);
-        assert_ne!(proof.root_from_pod_leaf(&data[0]), root);
+        assert_eq!(proof.root_from_pod_leaf(&data[2], Some(LEAF_PREFIX)), root);
+        assert_ne!(proof.root_from_pod_leaf(&data[0], Some(LEAF_PREFIX)), root);
     }
 }
