@@ -1,7 +1,7 @@
 [package]
 name = "svm-hash"
 description = "Solana-compatible hashing and Merkle tree utilities"
-version = "0.1.0"
+version = "0.1.0-beta.2"
 
 edition = "2021"
 homepage = "https://doublezero.xyz"
@@ -18,3 +18,6 @@ solana-sha256-hasher = "2"
 [features]
 default = []
 bytemuck = ["dep:bytemuck", "solana-hash/bytemuck"]
+
+[package.metadata.docs.rs]
+all-features = true
