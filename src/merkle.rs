@@ -1,3 +1,5 @@
+#[cfg(feature = "borsh")]
+use borsh::{BorshDeserialize, BorshSerialize};
 use solana_hash::Hash;
 use solana_sha256_hasher::hashv;
 
@@ -15,6 +17,7 @@ pub const NODE_PREFIX: &[u8] = &[0x01];
 
 /// A sibling node in a Merkle proof, containing the hash and position
 /// information.
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleSibling {
     /// The hash of the sibling node.
@@ -24,10 +27,12 @@ pub struct MerkleSibling {
 }
 
 /// A Merkle inclusion proof consisting of a path of sibling hashes.
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleProof(Vec<MerkleSibling>);
 
 /// Indicates whether a sibling node is on the left or right side of the tree.
+#[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LeafSide {
     Left,

@@ -1,7 +1,7 @@
 [package]
 name = "svm-hash"
 description = "Solana-compatible hashing and Merkle tree utilities"
-version = "0.1.0-beta.2"
+version = "0.1.0-beta.3"
 
 edition = "2021"
 homepage = "https://doublezero.xyz"
@@ -11,12 +11,14 @@ repository = "https://github.com/doublezerofoundation/svm-hash-rs"
 rust-version = "1.83"
 
 [dependencies]
+borsh = { optional = true, version = "1.5", features = ["derive"] }
 bytemuck = { optional = true, version = "1.23", features = ["derive"]}
 solana-hash = "2"
 solana-sha256-hasher = "2"
 
 [features]
 default = []
+borsh = ["dep:borsh", "solana-hash/borsh"]
 bytemuck = ["dep:bytemuck", "solana-hash/bytemuck"]
 
 [package.metadata.docs.rs]
