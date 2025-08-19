@@ -72,19 +72,20 @@ fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
 
     let mut len = nodes.len();
     while len > 1 {
-        let mut write_idx = 0;
-        for read_idx in (0..len).step_by(2) {
-            let left = nodes[read_idx];
-            let right = if read_idx + 1 < len {
-                nodes[read_idx + 1]
+        let mut write_index = 0;
+        for read_index in (0..len).step_by(2) {
+            let left = nodes[read_index];
+
+            let right_index = read_index + 1;
+            let right = if read_index + 1 < len {
+                nodes[read_index + 1]
             } else {
-                // NOTE: Duplicate the last node if odd number
-                left
+                dummy_right_leaf(right_index, left)
             };
-            nodes[write_idx] = hash_pair(&left, &right);
-            write_idx += 1;
+            nodes[write_index] = hash_pair(&left, &right);
+            write_index += 1;
         }
-        len = write_idx;
+        len = write_index;
     }
 
     nodes.first().copied()
@@ -134,7 +135,11 @@ impl MerkleProof {
 
             for i in (0..nodes.len()).step_by(2) {
                 let left = nodes[i];
-                let right = *nodes.get(i + 1).unwrap_or(&left);
+
+                let right_index = i + 1;
+                let right = *nodes
+                    .get(i + 1)
+                    .unwrap_or(&dummy_right_leaf(right_index, left));
                 next.push(hash_pair(&left, &right));
 
                 if i == index || i + 1 == index {
@@ -268,6 +273,13 @@ impl IntoIterator for MerkleProof {
     }
 }
 
+/// To avoid duplicating the last leaf, we create a dummy right leaf. This
+/// method adds overhead when calculating the root because it needs to hash the
+/// dummy leaf. But the cost in SVM runtime is minimal.
+fn dummy_right_leaf(right_index: usize, left: Hash) -> Hash {
+    hashv(&[&right_index.to_le_bytes(), left.as_ref()])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +387,7 @@ mod tests {
         let leaves: [&[u8]; 4] = [b"leaf0", b"leaf1", b"leaf2", b"leaf3"];
         let root = merkle_root_from_leaves(&leaves, None).unwrap();
 
-        // For a 4-leaf tree, each proof should have exactly 2 siblings
+        // For a 4-leaf tree, each proof should have exactly 2 siblings.
         for i in 0..4 {
             let proof = MerkleProof::from_leaves(&leaves, i, None).unwrap();
             assert_eq!(proof.len(), 2);
@@ -400,7 +412,7 @@ mod tests {
         // Verify proof length. For 5 leaves, ceil(log2(5)) = 3.
         assert_eq!(proof.len(), 3);
 
-        // Test proof for the last leaf
+        // Test proof for the last leaf.
         let last_leaf_index = 4; // "E"
         let last_leaf = leaves[last_leaf_index];
         let proof_last =
@@ -412,11 +424,54 @@ mod tests {
     }
 
     #[test]
+    fn test_odd_number_of_leaves_cannot_spoof_root() {
+        const LEAF_PREFIX: &[u8] = b"test_odd_number_of_leaves_cannot_spoof_root";
+
+        let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
+        let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        // We cannot spoof the root by duplicating the last leaf.
+        let leaves_duplicated_last: [&[u8]; 6] = [b"A", b"B", b"C", b"D", b"E", b"E"];
+        let root_duplicated_last =
+            merkle_root_from_leaves(&leaves_duplicated_last, Some(LEAF_PREFIX)).unwrap();
+        assert_ne!(root, root_duplicated_last);
+
+        let last_left_index = 4;
+        let proof_last_left =
+            MerkleProof::from_leaves(&leaves_duplicated_last, last_left_index, Some(LEAF_PREFIX))
+                .unwrap();
+        assert_ne!(
+            proof_last_left
+                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            root
+        );
+
+        let last_right_index = 5;
+        let proof_last_right =
+            MerkleProof::from_leaves(&leaves_duplicated_last, last_right_index, Some(LEAF_PREFIX))
+                .unwrap();
+        assert_ne!(
+            proof_last_right
+                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            root
+        );
+
+        // We should expect that these are equal.
+        assert_eq!(
+            proof_last_left
+                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            proof_last_right
+                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX))
+        );
+    }
+
+    #[test]
     fn test_even_tree_proof_content() {
         const LEAF_PREFIX: &[u8] = b"test_even_tree_proof_content";
 
-        // This test verifies the exact content of a proof for a balanced, power-of-two tree.
-        // For 4 leaves (A, B, C, D), the tree structure is perfectly balanced.
+        // This test verifies the exact content of a proof for a balanced,
+        // power-of-two tree. For 4 leaves (A, B, C, D), the tree structure is
+        // perfectly balanced.
         //
         //          root
         //         /    \
@@ -462,22 +517,24 @@ mod tests {
 
     #[test]
     fn test_odd_tree_proof_content() {
-        // This test verifies the exact content of a proof for a non-power-of-two tree.
-        // For 3 leaves (A, B, C), the tree structure is unbalanced. The lone leaf C
-        // at the first level is duplicated to create its partner node.
+        // This test verifies the exact content of a proof for a
+        // non-power-of-two tree. For 3 leaves (A, B, C), the tree structure is
+        // unbalanced. The lone leaf C at the first level is duplicated to
+        // create its partner node.
         //
         //          root
         //         /    \
         //        /      \
-        //     hash_ab    hash_cc
+        //     hash_ab    hash_c_dummy
         //      / \        /   \
         //     /   \      /     \
-        //   h(A) h(B)   h(C)   h(C)
+        //   h(A) h(B)   h(C)   DUMMY
         //
         // The proof path for h(B) is as follows:
         // 1. To get to `hash_ab`, we need `h(A)`, which is the Left sibling.
-        // 2. To get to `root`, we need `hash_cc`, which is the Right sibling.
-        // The final proof should be `[ (h(A), Left), (hash_cc, Right) ]`.
+        // 2. To get to `root`, we need `hash_c_dummy`, which is the Right
+        //    sibling.
+        // The final proof should be `[ (h(A), Left), (hash_c_dummy, Right) ]`.
 
         let leaves: [&[u8]; 3] = [b"A", b"B", b"C"];
 
@@ -485,8 +542,10 @@ mod tests {
         let hash_a = double_hash(b"A", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
         let hash_c = double_hash(b"C", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
 
-        // At the second level, C is paired with itself to create the hash_cc node
-        let hash_cc = hash_pair(&hash_c, &hash_c);
+        // At the second level, C is paired with itself to create the
+        // `hash_c_dummy` node.
+        let dummy = dummy_right_leaf(2 + 1, hash_c);
+        let hash_c_dummy = hash_pair(&hash_c, &dummy);
 
         // Generate proof for leaf "B" (index 1)
         let proof = MerkleProof::from_leaves(&leaves, 1, None).unwrap();
@@ -495,15 +554,15 @@ mod tests {
         let root = merkle_root_from_leaves(&leaves, None).unwrap();
         assert_eq!(proof.root_from_leaf(b"B", None), root);
 
-        // Assert the exact proof structure as derived from the diagram
+        // Assert the exact proof structure as derived from the diagram.
         assert_eq!(proof.len(), 2);
 
-        // 1. First sibling is h(A) on the left
+        // 1. First sibling is h(A) on the left.
         assert_eq!(proof.0[0].hash, hash_a);
         assert_eq!(proof.0[0].side, LeafSide::Left);
 
-        // 2. Second sibling is hash_cc on the right
-        assert_eq!(proof.0[1].hash, hash_cc);
+        // 2. Second sibling is hash_c_dummy on the right.
+        assert_eq!(proof.0[1].hash, hash_c_dummy);
         assert_eq!(proof.0[1].side, LeafSide::Right);
     }
 
@@ -511,7 +570,7 @@ mod tests {
     fn test_generic_asref() {
         const LEAF_PREFIX: &[u8] = b"test_generic_asref";
 
-        // Test various types that implement AsRef<[u8]>
+        // Test various types that implement AsRef<[u8]>.
         let string_leaves = vec![
             "apple".to_string(),
             "banana".to_string(),
@@ -521,7 +580,7 @@ mod tests {
             vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()];
         let str_leaves = vec!["apple", "banana", "cherry"];
 
-        // Test from_byte_ref_leaves with different types
+        // Test from_byte_ref_leaves with different types.
         let proof_string =
             MerkleProof::from_byte_ref_leaves(&string_leaves, 1, Some(LEAF_PREFIX)).unwrap();
         let proof_vec =
@@ -529,11 +588,12 @@ mod tests {
         let proof_str =
             MerkleProof::from_byte_ref_leaves(&str_leaves, 1, Some(LEAF_PREFIX)).unwrap();
 
-        // All proofs should be identical since the underlying bytes are the same
+        // All proofs should be identical since the underlying bytes are the
+        // same.
         assert_eq!(proof_string.len(), proof_vec.len());
         assert_eq!(proof_string.len(), proof_str.len());
 
-        // Test root_from_byte_ref_leaf with different types
+        // Test root_from_byte_ref_leaf with different types.
         let root_string =
             proof_string.root_from_byte_ref_leaf(&string_leaves[1], Some(LEAF_PREFIX));
         let root_vec = proof_vec.root_from_byte_ref_leaf(&vec_leaves[1], Some(LEAF_PREFIX));
@@ -542,7 +602,7 @@ mod tests {
         assert_eq!(root_string, root_vec);
         assert_eq!(root_string, root_str);
 
-        // Test merkle_root_from_byte_ref_leaves
+        // Test merkle_root_from_byte_ref_leaves.
         let merkle_root_string =
             merkle_root_from_byte_ref_leaves(&string_leaves, Some(LEAF_PREFIX)).unwrap();
         let merkle_root_vec =
@@ -553,7 +613,7 @@ mod tests {
         assert_eq!(merkle_root_string, merkle_root_vec);
         assert_eq!(merkle_root_string, merkle_root_str);
 
-        // Verify the roots match
+        // Verify the roots match.
         assert_eq!(root_string, merkle_root_string);
     }
 
@@ -562,18 +622,18 @@ mod tests {
         let leaves: [&[u8]; 4] = [b"one", b"two", b"three", b"four"];
         let proof = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
 
-        // Test borrowed iterator (&MerkleProof)
+        // Test borrowed iterator (&MerkleProof).
         let borrowed_siblings: Vec<_> = (&proof).into_iter().collect();
-        assert_eq!(borrowed_siblings.len(), 2); // 4 leaves = 2 levels
+        assert_eq!(borrowed_siblings.len(), 2); // 4 leaves = 2 levels.
 
-        // Verify we can iterate multiple times with borrowed iterator
+        // Verify we can iterate multiple times with borrowed iterator.
         let borrowed_count = (&proof).into_iter().count();
         assert_eq!(borrowed_count, 2);
 
-        // Test that the proof still exists after borrowed iteration
+        // Test that the proof still exists after borrowed iteration.
         assert_eq!(proof.len(), 2);
 
-        // Test owned iterator (MerkleProof) - this consumes the proof
+        // Test owned iterator (MerkleProof) - this consumes the proof.
         let proof_for_owned = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
         let owned_siblings: Vec<MerkleSibling> = proof_for_owned.into_iter().collect();
         assert_eq!(owned_siblings.len(), 2);
