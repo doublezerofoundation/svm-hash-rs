@@ -1,9 +1,7 @@
 use bytemuck::Pod;
 use solana_hash::Hash;
 
-use crate::sha2::double_hash;
-
-use super::{hash_leaves, MerkleProof, DEFAULT_LEAF_PREFIX};
+use super::{hash_leaf_internal, hash_leaves_internal, root_from_leaf_hashes, MerkleProof};
 
 impl MerkleProof {
     /// Create a proof from POD (Plain Old Data) items when bytemuck feature is
@@ -14,21 +12,33 @@ impl MerkleProof {
         node_index: usize,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
-        Self::from_hashed_leaves(
-            hash_leaves(items, bytemuck::bytes_of, leaf_prefix),
-            node_index,
-        )
+        let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, false);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: None,
+        })
+    }
+
+    /// Create proof from POD items with index binding.
+    pub fn from_indexed_pod_leaves<T: Pod>(
+        items: &[T],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
+        let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, true);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: Some(node_index as u64),
+        })
     }
 
     /// Compute the root from a POD leaf when bytemuck feature is enabled. The
     /// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
     pub fn root_from_pod_leaf<T: Pod>(&self, item: &T, leaf_prefix: Option<&[u8]>) -> Hash {
-        let leaf = double_hash(
-            bytemuck::bytes_of(item),
-            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-            DEFAULT_LEAF_PREFIX,
-        );
-        self.root_from_hashed_leaf(leaf)
+        let leaf_hash = hash_leaf_internal(item, self.leaf_index, bytemuck::bytes_of, leaf_prefix);
+        self.root_from_hashed_leaf(leaf_hash)
     }
 }
 
@@ -38,7 +48,18 @@ pub fn merkle_root_from_pod_leaves<T: Pod>(
     items: &[T],
     leaf_prefix: Option<&[u8]>,
 ) -> Option<Hash> {
-    super::root_from_leaf_hashes(hash_leaves(items, bytemuck::bytes_of, leaf_prefix))
+    let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, false);
+    root_from_leaf_hashes(hashes)
+}
+
+/// Compute the Merkle root from POD leaves with index binding. The
+/// `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
+pub fn merkle_root_from_indexed_pod_leaves<T: Pod>(
+    items: &[T],
+    leaf_prefix: Option<&[u8]>,
+) -> Option<Hash> {
+    let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, true);
+    root_from_leaf_hashes(hashes)
 }
 
 #[cfg(test)]

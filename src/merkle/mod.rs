@@ -18,6 +18,9 @@ pub const DEFAULT_LEAF_PREFIX: &[u8] = &[0x00];
 /// Prefix used when hashing internal nodes.
 pub const NODE_PREFIX: &[u8] = &[0x01];
 
+/// Separator used to indicate the end of an index in a Merkle proof.
+pub const INDEX_SEPARATOR: u8 = 0xFF;
+
 /// A sibling node in a Merkle proof, containing the hash and position
 /// information.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -32,7 +35,12 @@ pub struct MerkleSibling {
 /// A Merkle inclusion proof consisting of a path of sibling hashes.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MerkleProof(Vec<MerkleSibling>);
+pub struct MerkleProof {
+    siblings: Vec<MerkleSibling>,
+
+    /// `None` if opting out of indexed leaves.
+    leaf_index: Option<u64>,
+}
 
 /// Indicates whether a sibling node is on the left or right side of the tree.
 #[cfg_attr(feature = "borsh", derive(BorshSerialize, BorshDeserialize))]
@@ -47,21 +55,49 @@ fn hash_pair(left: &Hash, right: &Hash) -> Hash {
     hashv(&[NODE_PREFIX, left.as_ref(), right.as_ref()])
 }
 
-/// Convert a slice of items to their corresponding leaf hashes.
-fn hash_leaves<T>(
+/// For indexed leaves: Creates a 10-byte second_prefix
+/// (DEFAULT_LEAF_PREFIX[0] + 8_bytes_index + separator) then applies
+/// double_hash(data, original_prefix, second_prefix) For non-indexed leaves:
+/// Uses the original double_hash(data, prefix, DEFAULT_LEAF_PREFIX)
+///
+/// This is a helper function for `hash_leaf` and `hash_leaf_internal`.
+fn hash_leaf_internal<T>(
+    item: &T,
+    index: Option<u64>,
+    to_bytes: impl Fn(&T) -> &[u8],
+    leaf_prefix: Option<&[u8]>,
+) -> Hash {
+    let data = to_bytes(item);
+    let prefix = leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX);
+
+    if let Some(idx) = index {
+        let mut second_prefix = [0; 10];
+        second_prefix[0] = DEFAULT_LEAF_PREFIX[0];
+        second_prefix[1..9].copy_from_slice(&idx.to_le_bytes());
+        second_prefix[9] = INDEX_SEPARATOR;
+
+        // Preserve double hash structure: hash(prefix + data) then hash again
+        // with second prefix.
+        double_hash(data, prefix, &second_prefix)
+    } else {
+        double_hash(data, prefix, DEFAULT_LEAF_PREFIX)
+    }
+}
+
+fn hash_leaves_internal<T>(
     items: &[T],
     to_bytes: impl Fn(&T) -> &[u8],
     leaf_prefix: Option<&[u8]>,
+    include_index: bool,
 ) -> Vec<Hash> {
-    let mut hashes = Vec::with_capacity(items.len());
-    for item in items {
-        hashes.push(double_hash(
-            to_bytes(item),
-            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-            DEFAULT_LEAF_PREFIX,
-        ));
-    }
-    hashes
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let index = if include_index { Some(i as u64) } else { None };
+            hash_leaf_internal(item, index, &to_bytes, leaf_prefix)
+        })
+        .collect()
 }
 
 /// Compute the Merkle root from a vector of leaf hashes.
@@ -104,32 +140,46 @@ impl MerkleProof {
         node_index: usize,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
-        let hashes: Vec<Hash> = items
-            .iter()
-            .map(|bytes| {
-                double_hash(
-                    bytes,
-                    leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-                    DEFAULT_LEAF_PREFIX,
-                )
-            })
-            .collect();
-        Self::from_hashed_leaves(hashes, node_index)
+        let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, false);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: None,
+        })
+    }
+
+    /// Create a `MerkleProof` from a slice of raw byte slices with index
+    /// binding. Each item will be hashed with its index to prevent position
+    /// confusion attacks.
+    pub fn from_indexed_leaves(
+        items: &[&[u8]],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
+        let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, true);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: Some(node_index as u64),
+        })
     }
 
     /// Create a `MerkleProof` from pre-hashed leaves.
-    fn from_hashed_leaves(mut nodes: Vec<Hash>, node_index: usize) -> Option<Self> {
+    fn from_hashed_leaves_internal(
+        mut nodes: Vec<Hash>,
+        node_index: usize,
+    ) -> Option<Vec<MerkleSibling>> {
         if node_index >= nodes.len() {
             return None;
         }
 
-        // NOTE: Pre-calculate tree_depth for siblings
+        // NOTE: Pre-calculate tree depth for siblings.
         let tree_depth = (nodes.len() as f64).log2().ceil() as usize;
         let mut siblings = Vec::with_capacity(tree_depth);
         let mut index = node_index;
 
         while nodes.len() > 1 {
-            // NOTE: Pre-allocate with exact capacity
+            // NOTE: Pre-allocate with exact capacity.
             let next_size = nodes.len().div_ceil(2);
             let mut next = Vec::with_capacity(next_size);
 
@@ -162,12 +212,12 @@ impl MerkleProof {
         }
 
         debug_assert_eq!(siblings.len(), tree_depth, "tree depth size mismatch");
-        Some(Self(siblings))
+        Some(siblings)
     }
 
     /// Compute the Merkle root from a hashed leaf using this proof.
     fn root_from_hashed_leaf(&self, leaf: Hash) -> Hash {
-        self.0.iter().fold(
+        self.siblings.iter().fold(
             leaf,
             |hash,
              MerkleSibling {
@@ -184,21 +234,17 @@ impl MerkleProof {
 
     /// Get the number of siblings in this proof (equivalent to tree depth).
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.siblings.len()
     }
 
     /// Check if this proof is empty (no siblings).
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.siblings.is_empty()
     }
 
     pub fn root_from_leaf(&self, leaf: &[u8], leaf_prefix: Option<&[u8]>) -> Hash {
-        let leaf = double_hash(
-            leaf,
-            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-            DEFAULT_LEAF_PREFIX,
-        );
-        self.root_from_hashed_leaf(leaf)
+        let leaf_hash = hash_leaf_internal(&leaf, self.leaf_index, |b| *b, leaf_prefix);
+        self.root_from_hashed_leaf(leaf_hash)
     }
 
     /// Create a proof from items implementing `AsRef<[u8]>`. The `leaf_prefix`
@@ -208,7 +254,26 @@ impl MerkleProof {
         node_index: usize,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
-        Self::from_hashed_leaves(hash_leaves(items, AsRef::as_ref, leaf_prefix), node_index)
+        let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, false);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: None,
+        })
+    }
+
+    /// Create a proof from items implementing `AsRef<[u8]>` with index binding.
+    pub fn from_indexed_byte_ref_leaves<T: AsRef<[u8]>>(
+        items: &[T],
+        node_index: usize,
+        leaf_prefix: Option<&[u8]>,
+    ) -> Option<Self> {
+        let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, true);
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        Some(Self {
+            siblings,
+            leaf_index: Some(node_index as u64),
+        })
     }
 
     /// Compute the root from a leaf implementing `AsRef<[u8]>`. The
@@ -218,12 +283,8 @@ impl MerkleProof {
         item: &T,
         leaf_prefix: Option<&[u8]>,
     ) -> Hash {
-        let leaf = double_hash(
-            item.as_ref(),
-            leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-            DEFAULT_LEAF_PREFIX,
-        );
-        self.root_from_hashed_leaf(leaf)
+        let leaf_hash = hash_leaf_internal(item, self.leaf_index, AsRef::as_ref, leaf_prefix);
+        self.root_from_hashed_leaf(leaf_hash)
     }
 }
 
@@ -233,7 +294,19 @@ pub fn merkle_root_from_byte_ref_leaves<T: AsRef<[u8]>>(
     items: &[T],
     leaf_prefix: Option<&[u8]>,
 ) -> Option<Hash> {
-    root_from_leaf_hashes(hash_leaves(items, AsRef::as_ref, leaf_prefix))
+    let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, false);
+    root_from_leaf_hashes(hashes)
+}
+
+/// Compute the Merkle root from items implementing `AsRef<[u8]>` with index
+/// binding. The `leaf_prefix` is optional and defaults to
+/// `DEFAULT_LEAF_PREFIX`.
+pub fn merkle_root_from_indexed_byte_ref_leaves<T: AsRef<[u8]>>(
+    items: &[T],
+    leaf_prefix: Option<&[u8]>,
+) -> Option<Hash> {
+    let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, true);
+    root_from_leaf_hashes(hashes)
 }
 
 /// Compute the Merkle root from a slice of raw byte slices. The `leaf_prefix`
@@ -242,16 +315,17 @@ pub fn merkle_root_from_byte_ref_leaves<T: AsRef<[u8]>>(
 /// Each item is treated as a leaf and double-hashed with a leaf prefix (either
 /// `leaf_prefix` or `DEFAULT_LEAF_PREFIX`).
 pub fn merkle_root_from_leaves(items: &[&[u8]], leaf_prefix: Option<&[u8]>) -> Option<Hash> {
-    let hashes: Vec<Hash> = items
-        .iter()
-        .map(|bytes| {
-            double_hash(
-                bytes,
-                leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX),
-                DEFAULT_LEAF_PREFIX,
-            )
-        })
-        .collect();
+    let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, false);
+    root_from_leaf_hashes(hashes)
+}
+
+/// Compute the Merkle root from a slice of raw byte slices with index binding.
+/// The `leaf_prefix` is optional and defaults to `DEFAULT_LEAF_PREFIX`.
+pub fn merkle_root_from_indexed_leaves(
+    items: &[&[u8]],
+    leaf_prefix: Option<&[u8]>,
+) -> Option<Hash> {
+    let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, true);
     root_from_leaf_hashes(hashes)
 }
 
@@ -260,7 +334,7 @@ impl<'a> IntoIterator for &'a MerkleProof {
     type IntoIter = core::slice::Iter<'a, MerkleSibling>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
+        self.siblings.iter()
     }
 }
 
@@ -269,7 +343,7 @@ impl IntoIterator for MerkleProof {
     type IntoIter = std::vec::IntoIter<MerkleSibling>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
+        self.siblings.into_iter()
     }
 }
 
@@ -507,12 +581,12 @@ mod tests {
         assert_eq!(proof.len(), 2);
 
         // 1. First sibling is h(D) on the right
-        assert_eq!(proof.0[0].hash, hash_d);
-        assert_eq!(proof.0[0].side, LeafSide::Right);
+        assert_eq!(proof.siblings[0].hash, hash_d);
+        assert_eq!(proof.siblings[0].side, LeafSide::Right);
 
         // 2. Second sibling is hash_ab on the left
-        assert_eq!(proof.0[1].hash, hash_ab);
-        assert_eq!(proof.0[1].side, LeafSide::Left);
+        assert_eq!(proof.siblings[1].hash, hash_ab);
+        assert_eq!(proof.siblings[1].side, LeafSide::Left);
     }
 
     #[test]
@@ -558,12 +632,12 @@ mod tests {
         assert_eq!(proof.len(), 2);
 
         // 1. First sibling is h(A) on the left.
-        assert_eq!(proof.0[0].hash, hash_a);
-        assert_eq!(proof.0[0].side, LeafSide::Left);
+        assert_eq!(proof.siblings[0].hash, hash_a);
+        assert_eq!(proof.siblings[0].side, LeafSide::Left);
 
         // 2. Second sibling is hash_c_dummy on the right.
-        assert_eq!(proof.0[1].hash, hash_c_dummy);
-        assert_eq!(proof.0[1].side, LeafSide::Right);
+        assert_eq!(proof.siblings[1].hash, hash_c_dummy);
+        assert_eq!(proof.siblings[1].side, LeafSide::Right);
     }
 
     #[test]
