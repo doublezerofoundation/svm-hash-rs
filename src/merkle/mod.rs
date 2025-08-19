@@ -406,7 +406,7 @@ mod tests {
 
         let leaves: [&[u8]; 2] = [b"left", b"right"];
 
-        // Test proof for left leaf
+        // Test proof for left leaf.
         let proof_left = MerkleProof::from_leaves(&leaves, 0, Some(LEAF_PREFIX)).unwrap();
         let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
 
@@ -414,7 +414,7 @@ mod tests {
         assert_eq!(proof_left.len(), 1);
         assert!(!proof_left.is_empty());
 
-        // Test proof for right leaf
+        // Test proof for right leaf.
         let proof_right = MerkleProof::from_leaves(&leaves, 1, Some(LEAF_PREFIX)).unwrap();
         assert_eq!(
             proof_right.root_from_leaf(b"right", Some(LEAF_PREFIX)),
@@ -423,7 +423,7 @@ mod tests {
         assert_eq!(proof_right.len(), 1);
         assert!(!proof_right.is_empty());
 
-        // Cross-verify proofs don't work with wrong leaves
+        // Cross-verify proofs do not work with wrong leaves.
         assert_ne!(proof_left.root_from_leaf(b"right", Some(LEAF_PREFIX)), root);
         assert_ne!(proof_right.root_from_leaf(b"left", Some(LEAF_PREFIX)), root);
     }
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_proof_structure_correctness() {
-        // Test with 4 leaves to verify proof structure
+        // Test with 4 leaves to verify proof structure.
         let leaves: [&[u8]; 4] = [b"leaf0", b"leaf1", b"leaf2", b"leaf3"];
         let root = merkle_root_from_leaves(&leaves, None).unwrap();
 
@@ -476,7 +476,7 @@ mod tests {
         let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
         let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
 
-        // Test proof for a leaf in the middle
+        // Test proof for a leaf in the middle.
         let leaf_index = 2; // "C"
         let leaf = leaves[leaf_index];
 
@@ -504,7 +504,7 @@ mod tests {
         let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
         let root = merkle_root_from_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
 
-        // We cannot spoof the root by duplicating the last leaf.
+        // We should not be able to spoof the root by duplicating the last leaf.
         let leaves_duplicated_last: [&[u8]; 6] = [b"A", b"B", b"C", b"D", b"E", b"E"];
         let root_duplicated_last =
             merkle_root_from_leaves(&leaves_duplicated_last, Some(LEAF_PREFIX)).unwrap();
@@ -641,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generic_asref() {
+    fn test_generic_as_ref() {
         const LEAF_PREFIX: &[u8] = b"test_generic_asref";
 
         // Test various types that implement AsRef<[u8]>.
@@ -650,8 +650,7 @@ mod tests {
             "banana".to_string(),
             "cherry".to_string(),
         ];
-        let vec_leaves: Vec<Vec<u8>> =
-            vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()];
+        let vec_leaves = vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()];
         let str_leaves = vec!["apple", "banana", "cherry"];
 
         // Test from_byte_ref_leaves with different types.
@@ -697,7 +696,7 @@ mod tests {
         let proof = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
 
         // Test borrowed iterator (&MerkleProof).
-        let borrowed_siblings: Vec<_> = (&proof).into_iter().collect();
+        let borrowed_siblings = (&proof).into_iter().collect::<Vec<_>>();
         assert_eq!(borrowed_siblings.len(), 2); // 4 leaves = 2 levels.
 
         // Verify we can iterate multiple times with borrowed iterator.
@@ -709,7 +708,7 @@ mod tests {
 
         // Test owned iterator (MerkleProof) - this consumes the proof.
         let proof_for_owned = MerkleProof::from_leaves(&leaves, 2, None).unwrap();
-        let owned_siblings: Vec<MerkleSibling> = proof_for_owned.into_iter().collect();
+        let owned_siblings = proof_for_owned.into_iter().collect::<Vec<_>>();
         assert_eq!(owned_siblings.len(), 2);
 
         // Verify the siblings are the same between borrowed and owned
@@ -717,5 +716,334 @@ mod tests {
             assert_eq!(borrowed.hash, owned.hash);
             assert_eq!(borrowed.side, owned.side);
         }
+    }
+
+    #[test]
+    fn test_indexed_merkle_proof_basic() {
+        let leaves: [&[u8]; 26] = [
+            b"A", b"B", b"C", b"D", b"E", b"F", b"G", b"H", b"I", b"J", b"K", b"L", b"M", b"N",
+            b"O", b"P", b"Q", b"R", b"S", b"T", b"U", b"V", b"W", b"X", b"Y", b"Z",
+        ];
+
+        let leaf_index = 1;
+        let leaf: &[u8] = b"B";
+        assert_eq!(leaf, leaves[leaf_index]);
+
+        let proof = MerkleProof::from_indexed_leaves(&leaves, leaf_index, None).unwrap();
+        let root = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
+
+        assert_eq!(proof.root_from_leaf(leaf, None), root);
+        assert_ne!(proof.root_from_leaf(b"nope", None), root);
+
+        let mut wrong_leaves = leaves.to_vec();
+        wrong_leaves.retain(|l| l != &leaf);
+
+        for wrong_leaf in wrong_leaves.into_iter() {
+            assert_ne!(wrong_leaf, leaf);
+            assert_ne!(proof.root_from_leaf(wrong_leaf, None), root);
+        }
+    }
+
+    #[test]
+    fn test_indexed_vs_non_indexed_roots_differ() {
+        let leaves: [&[u8]; 4] = [b"A", b"B", b"C", b"D"];
+
+        let regular_root = merkle_root_from_leaves(&leaves, None).unwrap();
+        let indexed_root = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
+
+        // Roots should differ between indexed and non-indexed.
+        assert_ne!(regular_root, indexed_root);
+
+        let common_index = 0;
+        let common_leaf = b"A";
+        let common_prefix = None;
+
+        // Regular proof should not verify with indexed root.
+        let regular_proof = MerkleProof::from_leaves(&leaves, common_index, common_prefix).unwrap();
+        assert_ne!(
+            regular_proof.root_from_leaf(common_leaf, common_prefix),
+            indexed_root
+        );
+
+        // Indexed proof should not verify with regular root.
+        let indexed_proof =
+            MerkleProof::from_indexed_leaves(&leaves, common_index, common_prefix).unwrap();
+        assert_ne!(
+            indexed_proof.root_from_leaf(common_leaf, common_prefix),
+            regular_root
+        );
+    }
+
+    #[test]
+    fn test_indexed_single_leaf_tree() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_single_leaf_tree";
+
+        let leaves: [&[u8]; 1] = [b"single"];
+        let proof = MerkleProof::from_indexed_leaves(&leaves, 0, Some(LEAF_PREFIX)).unwrap();
+        let root = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        assert_eq!(proof.root_from_leaf(b"single", Some(LEAF_PREFIX)), root);
+        assert!(proof.is_empty());
+        assert_eq!(proof.len(), 0);
+
+        assert_ne!(proof.root_from_leaf(b"wrong", Some(LEAF_PREFIX)), root);
+        assert_ne!(proof.root_from_leaf(b"single", None), root);
+    }
+
+    #[test]
+    fn test_indexed_two_leaf_tree() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_two_leaf_tree";
+
+        let leaves: [&[u8]; 2] = [b"left", b"right"];
+
+        // Test proof for left leaf at index 0.
+        let proof_left = MerkleProof::from_indexed_leaves(&leaves, 0, Some(LEAF_PREFIX)).unwrap();
+        let root = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        assert_eq!(proof_left.root_from_leaf(b"left", Some(LEAF_PREFIX)), root);
+        assert_eq!(proof_left.len(), 1);
+        assert!(!proof_left.is_empty());
+
+        // Test proof for right leaf at index 1.
+        let proof_right = MerkleProof::from_indexed_leaves(&leaves, 1, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(
+            proof_right.root_from_leaf(b"right", Some(LEAF_PREFIX)),
+            root
+        );
+        assert_eq!(proof_right.len(), 1);
+        assert!(!proof_right.is_empty());
+
+        // Cross-verify proofs don't work with wrong leaves.
+        assert_ne!(proof_left.root_from_leaf(b"right", Some(LEAF_PREFIX)), root);
+        assert_ne!(proof_right.root_from_leaf(b"left", Some(LEAF_PREFIX)), root);
+    }
+
+    #[test]
+    fn test_indexed_deterministic_roots() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_deterministic_roots";
+
+        let leaves: [&[u8]; 4] = [b"apple", b"banana", b"cherry", b"date"];
+
+        let root1 = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+        let root2 = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(root1, root2);
+
+        let reordered: [&[u8]; 4] = [b"banana", b"apple", b"cherry", b"date"];
+        let root3 = merkle_root_from_indexed_leaves(&reordered, Some(LEAF_PREFIX)).unwrap();
+
+        // With indexed leaves, reordering changes the root because each leaf
+        // is bound to its index.
+        assert_ne!(root1, root3);
+    }
+
+    #[test]
+    fn test_indexed_empty_tree() {
+        assert!(merkle_root_from_indexed_leaves(&[], None).is_none());
+        assert!(MerkleProof::from_indexed_leaves(&[], 0, None).is_none());
+    }
+
+    #[test]
+    fn test_indexed_invalid_indices() {
+        let leaves: [&[u8]; 3] = [b"one", b"two", b"three"];
+        assert!(MerkleProof::from_indexed_leaves(&leaves, 3, None).is_none());
+    }
+
+    #[test]
+    fn test_indexed_odd_number_of_leaves() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_odd_number_of_leaves";
+
+        let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
+        let root = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        // Test proof for a leaf in the middle.
+        let leaf_index = 2; // "C"
+        let leaf = leaves[leaf_index];
+
+        let proof =
+            MerkleProof::from_indexed_leaves(&leaves, leaf_index, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(proof.root_from_leaf(leaf, Some(LEAF_PREFIX)), root);
+
+        // Verify proof length. For 5 leaves, ceil(log2(5)) = 3.
+        assert_eq!(proof.len(), 3);
+
+        // Test proof for the last leaf.
+        let last_leaf_index = 4; // "E"
+        let last_leaf = leaves[last_leaf_index];
+        let proof_last =
+            MerkleProof::from_indexed_leaves(&leaves, last_leaf_index, Some(LEAF_PREFIX)).unwrap();
+        assert_eq!(
+            proof_last.root_from_leaf(last_leaf, Some(LEAF_PREFIX)),
+            root
+        );
+    }
+
+    #[test]
+    fn test_indexed_odd_number_of_leaves_cannot_spoof_root() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_odd_number_of_leaves_cannot_spoof_root";
+
+        let leaves: [&[u8]; 5] = [b"A", b"B", b"C", b"D", b"E"];
+        let root = merkle_root_from_indexed_leaves(&leaves, Some(LEAF_PREFIX)).unwrap();
+
+        // We should not be able to spoof the root by duplicating the last leaf.
+        let leaves_duplicated_last: [&[u8]; 6] = [b"A", b"B", b"C", b"D", b"E", b"E"];
+        let root_duplicated_last =
+            merkle_root_from_indexed_leaves(&leaves_duplicated_last, Some(LEAF_PREFIX)).unwrap();
+        assert_ne!(root, root_duplicated_last);
+
+        let last_left_index = 4;
+        let proof_last_left = MerkleProof::from_indexed_leaves(
+            &leaves_duplicated_last,
+            last_left_index,
+            Some(LEAF_PREFIX),
+        )
+        .unwrap();
+        assert_ne!(
+            proof_last_left
+                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            root
+        );
+
+        let last_right_index = 5;
+        let proof_last_right = MerkleProof::from_indexed_leaves(
+            &leaves_duplicated_last,
+            last_right_index,
+            Some(LEAF_PREFIX),
+        )
+        .unwrap();
+        assert_ne!(
+            proof_last_right
+                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            root
+        );
+
+        // Even though the data is the same ("E"), with indexed leaves they
+        // produce the same root because they're both validating against the
+        // 6-leaf tree. The important point is that neither can produce the
+        // original 5-leaf root.
+        assert_eq!(
+            proof_last_left
+                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            root_duplicated_last
+        );
+        assert_eq!(
+            proof_last_right
+                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            root_duplicated_last
+        );
+    }
+
+    #[test]
+    fn test_indexed_generic_as_ref() {
+        const LEAF_PREFIX: &[u8] = b"test_indexed_generic_as_ref";
+
+        // Test various types that implement AsRef<[u8]>.
+        let string_leaves = vec![
+            "apple".to_string(),
+            "banana".to_string(),
+            "cherry".to_string(),
+        ];
+        let vec_leaves = vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()];
+        let str_leaves = vec!["apple", "banana", "cherry"];
+
+        // Test from_indexed_byte_ref_leaves with different types.
+        let proof_string =
+            MerkleProof::from_indexed_byte_ref_leaves(&string_leaves, 1, Some(LEAF_PREFIX))
+                .unwrap();
+        let proof_vec =
+            MerkleProof::from_indexed_byte_ref_leaves(&vec_leaves, 1, Some(LEAF_PREFIX)).unwrap();
+        let proof_str =
+            MerkleProof::from_indexed_byte_ref_leaves(&str_leaves, 1, Some(LEAF_PREFIX)).unwrap();
+
+        // All proofs should be identical since the underlying bytes are the
+        // same.
+        assert_eq!(proof_string.len(), proof_vec.len());
+        assert_eq!(proof_string.len(), proof_str.len());
+
+        // Test root_from_byte_ref_leaf with different types.
+        let root_string =
+            proof_string.root_from_byte_ref_leaf(&string_leaves[1], Some(LEAF_PREFIX));
+        let root_vec = proof_vec.root_from_byte_ref_leaf(&vec_leaves[1], Some(LEAF_PREFIX));
+        let root_str = proof_str.root_from_byte_ref_leaf(&str_leaves[1], Some(LEAF_PREFIX));
+
+        assert_eq!(root_string, root_vec);
+        assert_eq!(root_string, root_str);
+
+        // Test merkle_root_from_indexed_byte_ref_leaves.
+        let merkle_root_string =
+            merkle_root_from_indexed_byte_ref_leaves(&string_leaves, Some(LEAF_PREFIX)).unwrap();
+        let merkle_root_vec =
+            merkle_root_from_indexed_byte_ref_leaves(&vec_leaves, Some(LEAF_PREFIX)).unwrap();
+        let merkle_root_str =
+            merkle_root_from_indexed_byte_ref_leaves(&str_leaves, Some(LEAF_PREFIX)).unwrap();
+
+        assert_eq!(merkle_root_string, merkle_root_vec);
+        assert_eq!(merkle_root_string, merkle_root_str);
+
+        // Verify the roots match.
+        assert_eq!(root_string, merkle_root_string);
+    }
+
+    #[test]
+    fn test_indexed_proof_structure() {
+        // Test that indexed proofs maintain correct structure.
+        let leaves: [&[u8]; 4] = [b"leaf0", b"leaf1", b"leaf2", b"leaf3"];
+        let root = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
+
+        // For a 4-leaf tree, each proof should have exactly 2 siblings.
+        for i in 0..4 {
+            let proof = MerkleProof::from_indexed_leaves(&leaves, i, None).unwrap();
+            assert_eq!(proof.len(), 2);
+            assert_eq!(proof.root_from_leaf(leaves[i], None), root);
+
+            // Verify the proof has the correct leaf index stored
+            assert_eq!(proof.leaf_index, Some(i as u64));
+        }
+    }
+
+    #[test]
+    fn test_indexed_same_data_different_positions() {
+        // Test that the same data at different positions produces different
+        // hashes. This is important because it ensures that the proof is
+        // position-bound, even though this is not a realistic use case.
+        let leaves: [&[u8]; 4] = [b"same", b"same", b"different", b"same"];
+
+        let proof0 = MerkleProof::from_indexed_leaves(&leaves, 0, None).unwrap();
+        let proof1 = MerkleProof::from_indexed_leaves(&leaves, 1, None).unwrap();
+        let proof3 = MerkleProof::from_indexed_leaves(&leaves, 3, None).unwrap();
+
+        let root = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
+
+        // All proofs should verify correctly with their respective positions.
+        assert_eq!(proof0.root_from_leaf(b"same", None), root);
+        assert_eq!(proof1.root_from_leaf(b"same", None), root);
+        assert_eq!(proof3.root_from_leaf(b"same", None), root);
+
+        // But the proofs themselves should be different because they are for
+        // different positions.
+        assert_ne!(proof0.siblings[0].hash, proof1.siblings[0].hash);
+        assert_ne!(proof0.siblings[0].hash, proof3.siblings[0].hash);
+        assert_ne!(proof1.siblings[0].hash, proof3.siblings[0].hash);
+    }
+
+    #[test]
+    fn test_indexed_with_custom_prefix() {
+        const CUSTOM_PREFIX: &[u8] = b"my_custom_prefix";
+
+        let leaves: [&[u8]; 3] = [b"alpha", b"beta", b"gamma"];
+
+        // Create indexed proof with custom prefix.
+        let proof = MerkleProof::from_indexed_leaves(&leaves, 1, Some(CUSTOM_PREFIX)).unwrap();
+        let root = merkle_root_from_indexed_leaves(&leaves, Some(CUSTOM_PREFIX)).unwrap();
+
+        // Should verify with the same custom prefix.
+        assert_eq!(proof.root_from_leaf(b"beta", Some(CUSTOM_PREFIX)), root);
+
+        // Should NOT verify with different or no prefix.
+        assert_ne!(proof.root_from_leaf(b"beta", None), root);
+        assert_ne!(proof.root_from_leaf(b"beta", Some(b"wrong_prefix")), root);
+
+        // Different prefix should produce different root.
+        let root_no_prefix = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
+        assert_ne!(root, root_no_prefix);
     }
 }
