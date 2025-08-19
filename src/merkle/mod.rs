@@ -38,8 +38,13 @@ pub struct MerkleSibling {
 pub struct MerkleProof {
     siblings: Vec<MerkleSibling>,
 
-    /// `None` if opting out of indexed leaves.
-    leaf_index: Option<u64>,
+    /// Index of the leaf in the tree. This value will be `Some` if the merkle
+    /// tree enforces the index to be a part of the hashed leaf.
+    ///
+    /// An example on how to use this index is to be able to set a flag
+    /// indicating whether a specific leaf has been used (like for a reward
+    /// claim to a particular address) to prevent replay attacks.
+    pub leaf_index: Option<u64>,
 }
 
 /// Indicates whether a sibling node is on the left or right side of the tree.
@@ -285,6 +290,11 @@ impl MerkleProof {
     ) -> Hash {
         let leaf_hash = hash_leaf_internal(item, self.leaf_index, AsRef::as_ref, leaf_prefix);
         self.root_from_hashed_leaf(leaf_hash)
+    }
+
+    /// Check if the merkle tree is indexed.
+    pub fn is_indexed(&self) -> bool {
+        self.leaf_index.is_some()
     }
 }
 
