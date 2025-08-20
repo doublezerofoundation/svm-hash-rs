@@ -1,7 +1,7 @@
 [package]
 name = "svm-hash"
 description = "Solana-compatible hashing and Merkle tree utilities"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 
 edition = "2021"
 homepage = "https://doublezero.xyz"
