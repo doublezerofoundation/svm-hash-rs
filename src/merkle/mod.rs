@@ -44,7 +44,7 @@ pub struct MerkleProof {
     /// An example on how to use this index is to be able to set a flag
     /// indicating whether a specific leaf has been used (like for a reward
     /// claim to a particular address) to prevent replay attacks.
-    pub leaf_index: Option<u64>,
+    pub leaf_index: Option<u32>,
 }
 
 /// Indicates whether a sibling node is on the left or right side of the tree.
@@ -68,7 +68,7 @@ fn hash_pair(left: &Hash, right: &Hash) -> Hash {
 /// This is a helper function for `hash_leaf` and `hash_leaf_internal`.
 fn hash_leaf_internal<T>(
     item: &T,
-    index: Option<u64>,
+    index: Option<u32>,
     to_bytes: impl Fn(&T) -> &[u8],
     leaf_prefix: Option<&[u8]>,
 ) -> Hash {
@@ -76,10 +76,10 @@ fn hash_leaf_internal<T>(
     let prefix = leaf_prefix.unwrap_or(DEFAULT_LEAF_PREFIX);
 
     if let Some(idx) = index {
-        let mut second_prefix = [0; 10];
+        let mut second_prefix = [0; 6];
         second_prefix[0] = DEFAULT_LEAF_PREFIX[0];
-        second_prefix[1..9].copy_from_slice(&idx.to_le_bytes());
-        second_prefix[9] = INDEX_SEPARATOR;
+        second_prefix[1..5].copy_from_slice(&idx.to_le_bytes());
+        second_prefix[5] = INDEX_SEPARATOR;
 
         // Preserve double hash structure: hash(prefix + data) then hash again
         // with second prefix.
@@ -89,23 +89,30 @@ fn hash_leaf_internal<T>(
     }
 }
 
+/// NOTE: This method will panic if the number of items is greater than
+/// `u32::MAX`.
 fn hash_leaves_internal<T>(
     items: &[T],
     to_bytes: impl Fn(&T) -> &[u8],
     leaf_prefix: Option<&[u8]>,
     include_index: bool,
 ) -> Vec<Hash> {
+    assert!(items.len() <= u32::MAX as usize);
+
     items
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let index = if include_index { Some(i as u64) } else { None };
+            let index = if include_index { Some(i as u32) } else { None };
             hash_leaf_internal(item, index, &to_bytes, leaf_prefix)
         })
         .collect()
 }
 
-/// Compute the Merkle root from a vector of leaf hashes.
+/// Compute the Merkle root from a vector of leaf hashes. This method does not
+/// check whether the number of nodes is greater than `u32::MAX` because the
+/// internal method that generates these nodes asserts that the number of nodes
+/// is less than or equal to `u32::MAX`.
 fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
     if nodes.is_empty() {
         return None;
@@ -121,7 +128,7 @@ fn root_from_leaf_hashes(mut nodes: Vec<Hash>) -> Option<Hash> {
             let right = if read_index + 1 < len {
                 nodes[read_index + 1]
             } else {
-                dummy_right_leaf(right_index, left)
+                dummy_right_leaf(right_index as u32, left)
             };
             nodes[write_index] = hash_pair(&left, &right);
             write_index += 1;
@@ -142,11 +149,11 @@ impl MerkleProof {
     /// `DEFAULT_LEAF_PREFIX`.
     pub fn from_leaves(
         items: &[&[u8]],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, false);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
             leaf_index: None,
@@ -158,14 +165,14 @@ impl MerkleProof {
     /// confusion attacks.
     pub fn from_indexed_leaves(
         items: &[&[u8]],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, |b| *b, leaf_prefix, true);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
-            leaf_index: Some(node_index as u64),
+            leaf_index: Some(node_index),
         })
     }
 
@@ -194,7 +201,7 @@ impl MerkleProof {
                 let right_index = i + 1;
                 let right = *nodes
                     .get(i + 1)
-                    .unwrap_or(&dummy_right_leaf(right_index, left));
+                    .unwrap_or(&dummy_right_leaf(right_index as u32, left));
                 next.push(hash_pair(&left, &right));
 
                 if i == index || i + 1 == index {
@@ -256,11 +263,11 @@ impl MerkleProof {
     /// is optional and defaults to `DEFAULT_LEAF_PREFIX`.
     pub fn from_byte_ref_leaves<T: AsRef<[u8]>>(
         items: &[T],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, false);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
             leaf_index: None,
@@ -270,14 +277,14 @@ impl MerkleProof {
     /// Create a proof from items implementing `AsRef<[u8]>` with index binding.
     pub fn from_indexed_byte_ref_leaves<T: AsRef<[u8]>>(
         items: &[T],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, AsRef::as_ref, leaf_prefix, true);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
-            leaf_index: Some(node_index as u64),
+            leaf_index: Some(node_index),
         })
     }
 
@@ -360,7 +367,7 @@ impl IntoIterator for MerkleProof {
 /// To avoid duplicating the last leaf, we create a dummy right leaf. This
 /// method adds overhead when calculating the root because it needs to hash the
 /// dummy leaf. But the cost in SVM runtime is minimal.
-fn dummy_right_leaf(right_index: usize, left: Hash) -> Hash {
+fn dummy_right_leaf(right_index: u32, left: Hash) -> Hash {
     hashv(&[&right_index.to_le_bytes(), left.as_ref()])
 }
 
@@ -377,7 +384,7 @@ mod tests {
 
         let leaf_index = 1;
         let leaf: &[u8] = b"B";
-        assert_eq!(leaf, leaves[leaf_index]);
+        assert_eq!(leaf, leaves[leaf_index as usize]);
 
         let proof = MerkleProof::from_leaves(&leaves, leaf_index, None).unwrap();
         let root = merkle_root_from_leaves(&leaves, None).unwrap();
@@ -475,7 +482,7 @@ mod tests {
         for i in 0..4 {
             let proof = MerkleProof::from_leaves(&leaves, i, None).unwrap();
             assert_eq!(proof.len(), 2);
-            assert_eq!(proof.root_from_leaf(leaves[i], None), root);
+            assert_eq!(proof.root_from_leaf(leaves[i as usize], None), root);
         }
     }
 
@@ -488,7 +495,7 @@ mod tests {
 
         // Test proof for a leaf in the middle.
         let leaf_index = 2; // "C"
-        let leaf = leaves[leaf_index];
+        let leaf = leaves[leaf_index as usize];
 
         let proof = MerkleProof::from_leaves(&leaves, leaf_index, Some(LEAF_PREFIX)).unwrap();
         assert_eq!(proof.root_from_leaf(leaf, Some(LEAF_PREFIX)), root);
@@ -498,7 +505,7 @@ mod tests {
 
         // Test proof for the last leaf.
         let last_leaf_index = 4; // "E"
-        let last_leaf = leaves[last_leaf_index];
+        let last_leaf = leaves[last_leaf_index as usize];
         let proof_last =
             MerkleProof::from_leaves(&leaves, last_leaf_index, Some(LEAF_PREFIX)).unwrap();
         assert_eq!(
@@ -525,8 +532,10 @@ mod tests {
             MerkleProof::from_leaves(&leaves_duplicated_last, last_left_index, Some(LEAF_PREFIX))
                 .unwrap();
         assert_ne!(
-            proof_last_left
-                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            proof_last_left.root_from_leaf(
+                leaves_duplicated_last[last_left_index as usize],
+                Some(LEAF_PREFIX)
+            ),
             root
         );
 
@@ -535,17 +544,23 @@ mod tests {
             MerkleProof::from_leaves(&leaves_duplicated_last, last_right_index, Some(LEAF_PREFIX))
                 .unwrap();
         assert_ne!(
-            proof_last_right
-                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            proof_last_right.root_from_leaf(
+                leaves_duplicated_last[last_right_index as usize],
+                Some(LEAF_PREFIX)
+            ),
             root
         );
 
         // We should expect that these are equal.
         assert_eq!(
-            proof_last_left
-                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
-            proof_last_right
-                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX))
+            proof_last_left.root_from_leaf(
+                leaves_duplicated_last[last_left_index as usize],
+                Some(LEAF_PREFIX)
+            ),
+            proof_last_right.root_from_leaf(
+                leaves_duplicated_last[last_right_index as usize],
+                Some(LEAF_PREFIX)
+            )
         );
     }
 
@@ -737,7 +752,7 @@ mod tests {
 
         let leaf_index = 1;
         let leaf: &[u8] = b"B";
-        assert_eq!(leaf, leaves[leaf_index]);
+        assert_eq!(leaf, leaves[leaf_index as usize]);
 
         let proof = MerkleProof::from_indexed_leaves(&leaves, leaf_index, None).unwrap();
         let root = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
@@ -867,7 +882,7 @@ mod tests {
 
         // Test proof for a leaf in the middle.
         let leaf_index = 2; // "C"
-        let leaf = leaves[leaf_index];
+        let leaf = leaves[leaf_index as usize];
 
         let proof =
             MerkleProof::from_indexed_leaves(&leaves, leaf_index, Some(LEAF_PREFIX)).unwrap();
@@ -878,7 +893,7 @@ mod tests {
 
         // Test proof for the last leaf.
         let last_leaf_index = 4; // "E"
-        let last_leaf = leaves[last_leaf_index];
+        let last_leaf = leaves[last_leaf_index as usize];
         let proof_last =
             MerkleProof::from_indexed_leaves(&leaves, last_leaf_index, Some(LEAF_PREFIX)).unwrap();
         assert_eq!(
@@ -908,8 +923,10 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            proof_last_left
-                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            proof_last_left.root_from_leaf(
+                leaves_duplicated_last[last_left_index as usize],
+                Some(LEAF_PREFIX)
+            ),
             root
         );
 
@@ -921,8 +938,10 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            proof_last_right
-                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            proof_last_right.root_from_leaf(
+                leaves_duplicated_last[last_right_index as usize],
+                Some(LEAF_PREFIX)
+            ),
             root
         );
 
@@ -931,13 +950,17 @@ mod tests {
         // 6-leaf tree. The important point is that neither can produce the
         // original 5-leaf root.
         assert_eq!(
-            proof_last_left
-                .root_from_leaf(leaves_duplicated_last[last_left_index], Some(LEAF_PREFIX)),
+            proof_last_left.root_from_leaf(
+                leaves_duplicated_last[last_left_index as usize],
+                Some(LEAF_PREFIX)
+            ),
             root_duplicated_last
         );
         assert_eq!(
-            proof_last_right
-                .root_from_leaf(leaves_duplicated_last[last_right_index], Some(LEAF_PREFIX)),
+            proof_last_right.root_from_leaf(
+                leaves_duplicated_last[last_right_index as usize],
+                Some(LEAF_PREFIX),
+            ),
             root_duplicated_last
         );
     }
@@ -1003,10 +1026,10 @@ mod tests {
         for i in 0..4 {
             let proof = MerkleProof::from_indexed_leaves(&leaves, i, None).unwrap();
             assert_eq!(proof.len(), 2);
-            assert_eq!(proof.root_from_leaf(leaves[i], None), root);
+            assert_eq!(proof.root_from_leaf(leaves[i as usize], None), root);
 
-            // Verify the proof has the correct leaf index stored
-            assert_eq!(proof.leaf_index, Some(i as u64));
+            // Verify the proof has the correct leaf index stored.
+            assert_eq!(proof.leaf_index.unwrap(), i);
         }
     }
 
