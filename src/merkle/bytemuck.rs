@@ -9,11 +9,11 @@ impl MerkleProof {
     /// `DEFAULT_LEAF_PREFIX`.
     pub fn from_pod_leaves<T: Pod>(
         items: &[T],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, false);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
             leaf_index: None,
@@ -23,14 +23,14 @@ impl MerkleProof {
     /// Create proof from POD items with index binding.
     pub fn from_indexed_pod_leaves<T: Pod>(
         items: &[T],
-        node_index: usize,
+        node_index: u32,
         leaf_prefix: Option<&[u8]>,
     ) -> Option<Self> {
         let hashes = hash_leaves_internal(items, bytemuck::bytes_of, leaf_prefix, true);
-        let siblings = Self::from_hashed_leaves_internal(hashes, node_index)?;
+        let siblings = Self::from_hashed_leaves_internal(hashes, node_index as usize)?;
         Some(Self {
             siblings,
-            leaf_index: Some(node_index as u64),
+            leaf_index: Some(node_index),
         })
     }
 
