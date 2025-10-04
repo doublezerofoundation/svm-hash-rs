@@ -1079,4 +1079,72 @@ mod tests {
         let root_no_prefix = merkle_root_from_indexed_leaves(&leaves, None).unwrap();
         assert_ne!(root, root_no_prefix);
     }
+
+    #[test]
+    fn test_odd_tree_multiple_dummies_proof_content() {
+        // This test verifies the exact content of a proof for a
+        // non-power-of-two tree. For 7 leaves (A, B, C, D, E, F, G), the tree structure is
+        // unbalanced. The lone leaf G at the first level is duplicated to
+        // create its partner node.
+        //
+        //                     ROOT
+        //                    /    \
+        //                   /      \
+        //            hash_ABCD      hash_EFG_dummy
+        //             /    \           /        \
+        //            /      \         /          \
+        //       hash_AB   hash_CD   hash_EF   hash_G_dummy
+        //        /  \      /  \      /  \       /      \
+        //       /    \    /    \    /    \     /        \
+        //    h(A)  h(B) h(C) h(D) h(E) h(F) h(G)  DUMMY(7,h(G))
+        //
+        // The proof path for h(B) is as follows:
+        // 1. To get to `hash_AB`, we need `h(A)`, which is the Left sibling.
+        // 2. To get to `hash_ABCD`, we need `hash_CD`, which is the Right sibling.
+        // 3. To get to `root`, we need `hash_EFG_dummy`, which is the Right sibling.
+        // The final proof should be `[ (h(A), Left), (hash_CD, Right), (hash_EFG_dummy, Right) ]`.
+
+        let leaves: [&[u8]; 7] = [b"A", b"B", b"C", b"D", b"E", b"F", b"G"];
+
+        // Manually compute the expected hashes
+        let hash_a = double_hash(b"A", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_c = double_hash(b"C", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_d = double_hash(b"D", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_e = double_hash(b"E", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_f = double_hash(b"F", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+        let hash_g = double_hash(b"G", DEFAULT_LEAF_PREFIX, DEFAULT_LEAF_PREFIX);
+
+        // Compute intermediate hashes
+        let hash_cd = hash_pair(&hash_c, &hash_d);
+        let hash_ef = hash_pair(&hash_e, &hash_f);
+
+        // At the second level, G is paired with a dummy to create the `hash_g_dummy` node.
+        let dummy = dummy_right_leaf(6 + 1, hash_g);
+        let hash_g_dummy = hash_pair(&hash_g, &dummy);
+
+        // At the third level, hash_EF is paired with hash_G_dummy to create `hash_EFG_dummy`.
+        let hash_efg_dummy = hash_pair(&hash_ef, &hash_g_dummy);
+
+        // Generate proof for leaf "B" (index 1)
+        let proof = MerkleProof::from_leaves(&leaves, 1, None).unwrap();
+
+        // Verification
+        let root = merkle_root_from_leaves(&leaves, None).unwrap();
+        assert_eq!(proof.root_from_leaf(b"B", None), root);
+
+        // Assert the exact proof structure as derived from the diagram.
+        assert_eq!(proof.len(), 3);
+
+        // 1. First sibling is h(A) on the left.
+        assert_eq!(proof.siblings[0].hash, hash_a);
+        assert_eq!(proof.siblings[0].side, LeafSide::Left);
+
+        // 2. Second sibling is hash_CD on the right.
+        assert_eq!(proof.siblings[1].hash, hash_cd);
+        assert_eq!(proof.siblings[1].side, LeafSide::Right);
+
+        // 3. Third sibling is hash_EFG_dummy on the right.
+        assert_eq!(proof.siblings[2].hash, hash_efg_dummy);
+        assert_eq!(proof.siblings[2].side, LeafSide::Right);
+    }
 }
