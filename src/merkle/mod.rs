@@ -1117,11 +1117,11 @@ mod tests {
         // Compute intermediate hashes
         let hash_cd = hash_pair(&hash_c, &hash_d);
         let hash_ef = hash_pair(&hash_e, &hash_f);
-        
+
         // At the second level, G is paired with a dummy to create the `hash_g_dummy` node.
         let dummy = dummy_right_leaf(6 + 1, hash_g);
         let hash_g_dummy = hash_pair(&hash_g, &dummy);
-        
+
         // At the third level, hash_EF is paired with hash_G_dummy to create `hash_EFG_dummy`.
         let hash_efg_dummy = hash_pair(&hash_ef, &hash_g_dummy);
 
