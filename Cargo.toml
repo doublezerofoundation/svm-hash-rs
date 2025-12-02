@@ -1,20 +1,24 @@
 [package]
 name = "svm-hash"
 description = "Solana-compatible hashing and Merkle tree utilities"
-version = "0.1.0"
+version = "0.2.0"
 
 edition = "2021"
 homepage = "https://doublezero.xyz"
 keywords = ["solana", "hash", "merkle"]
 license = "Apache-2.0"
 repository = "https://github.com/doublezerofoundation/svm-hash-rs"
-rust-version = "1.83"
+rust-version = "1.84.1"
 
 [dependencies]
-borsh = { optional = true, version = "1.5", features = ["derive"] }
-bytemuck = { optional = true, version = "1.23", features = ["derive"]}
-solana-hash = "2"
-solana-sha256-hasher = "2"
+borsh = { optional = true, version = "1", features = ["derive"] }
+bytemuck = { optional = true, version = "1", features = ["derive"]}
+solana-hash = { version = "4", features = ["copy"] }
+solana-sha256-hasher = "3"
+
+[dev-dependencies]
+solana-hash = { version = "4", features = ["atomic"] }
+solana-sha256-hasher = { version = "3", features = ["sha2"] }
 
 [features]
 default = []
